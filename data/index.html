@@ -486,8 +486,8 @@
               <div style="font-size:10px;color:var(--txd);font-family:'JetBrains Mono',monospace;margin-bottom:4px;font-weight:700">Presets</div>
               <div style="display:flex;gap:4px;align-items:center">
                 <select class="form-input M" id="loadoutSelect" style="flex:1;min-width:0;margin:0;font-size:11px;padding:4px 6px"></select>
-                <button class="btn btn-ghost M" style="padding:3px 8px;font-size:10px;white-space:nowrap" onclick="loadLoadoutIntoBuilder()">Load</button>
-                <button class="btn btn-primary M" style="padding:3px 8px;font-size:10px;white-space:nowrap" onclick="applyLoadoutDirect()">Apply</button>
+                <button class="btn btn-ghost M" style="padding:3px 8px;font-size:10px;white-space:nowrap;margin-top:0;width:auto" onclick="loadLoadoutIntoBuilder()">Load</button>
+                <button class="btn btn-primary M" style="padding:3px 8px;font-size:10px;white-space:nowrap;margin-top:0;width:auto" onclick="applyLoadoutDirect()">Apply</button>
               </div>
               <div id="loadoutLastApplied" style="font-size:9px;color:var(--txd);font-family:'JetBrains Mono',monospace;margin-top:3px;min-height:12px"></div>
             </div>
@@ -518,11 +518,11 @@
               <button class="btn btn-ghost M" style="font-size:10px;margin-top:4px;width:100%;padding:4px" onclick="ruleAddProt()">+ Add Limit</button>
             </div>
             <div style="display:flex;gap:6px;margin-top:12px">
-              <button class="btn btn-primary M" style="flex:1;font-size:11px" onclick="doApplyRules()">
+              <button class="btn btn-primary M" style="flex:1;width:auto;margin-top:0;font-size:11px" onclick="doApplyRules()">
                 <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" style="margin-right:4px"><polyline points="20 6 9 17 4 12"/></svg>
                 Apply Rules
               </button>
-              <button class="btn btn-ghost M" style="font-size:11px;white-space:nowrap" onclick="saveCurrentAsLoadout()">Save Preset</button>
+              <button class="btn btn-ghost M" style="width:auto;margin-top:0;font-size:11px;white-space:nowrap" onclick="saveCurrentAsLoadout()">Save Preset</button>
             </div>
           </div>
         </div>

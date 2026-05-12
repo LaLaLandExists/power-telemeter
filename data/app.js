@@ -1205,7 +1205,20 @@ function renderRuleSchedList(){
   el.innerHTML='';
   builderScheds.forEach((s,i)=>{
     const row=document.createElement('div');row.className='rule-row M';
-    row.innerHTML=`<input type="time" class="form-input M" value="${minutesToTime(s.onTime)}" style="flex:1;min-width:0;margin:0" onchange="builderScheds[${i}].onTime=timeToMinutes(this.value)"><span style="color:var(--txd);padding:0 3px">—</span><input type="time" class="form-input M" value="${minutesToTime(s.offTime)}" style="flex:1;min-width:0;margin:0" onchange="builderScheds[${i}].offTime=timeToMinutes(this.value)"><select class="form-input M" style="width:52px;margin:0;padding:4px" onchange="builderScheds[${i}].action=this.value"><option value="on"${s.action==='on'?' selected':''}>ON</option><option value="off"${s.action==='off'?' selected':''}>OFF</option></select><button class="btn btn-ghost M" style="padding:2px 7px;font-size:11px;margin:0" onclick="builderScheds.splice(${i},1);renderRuleSchedList()">×</button>`;
+    // Time inputs are wrapped in a sub-flex so they share available width without
+    // competing directly against the select and delete button in the outer row.
+    // min-width:80px on each input guarantees Chrome's native time picker renders.
+    row.innerHTML=
+      `<div style="display:flex;align-items:center;gap:2px;flex:1;min-width:0">`+
+        `<input type="time" class="form-input M" value="${minutesToTime(s.onTime)}" style="flex:1;min-width:80px;margin:0" oninput="builderScheds[${i}].onTime=timeToMinutes(this.value)">`+
+        `<span style="color:var(--txd);padding:0 2px;flex-shrink:0">—</span>`+
+        `<input type="time" class="form-input M" value="${minutesToTime(s.offTime)}" style="flex:1;min-width:80px;margin:0" oninput="builderScheds[${i}].offTime=timeToMinutes(this.value)">`+
+      `</div>`+
+      `<select class="form-input M" style="width:52px;flex-shrink:0;margin:0;padding:4px" onchange="builderScheds[${i}].action=this.value">`+
+        `<option value="on"${s.action==='on'?' selected':''}>ON</option>`+
+        `<option value="off"${s.action==='off'?' selected':''}>OFF</option>`+
+      `</select>`+
+      `<button style="padding:2px 8px;font-size:12px;flex-shrink:0;background:var(--sf2);border:1px solid var(--bd);border-radius:5px;cursor:pointer;color:var(--txd)" onclick="builderScheds.splice(${i},1);renderRuleSchedList()">×</button>`;
     el.appendChild(row);
   });
 }
@@ -1217,7 +1230,13 @@ function renderRuleProtList(){
     const row=document.createElement('div');row.className='rule-row M';
     const fOpts=RULE_FIELD_LABELS.map((f,fi)=>`<option value="${fi}"${fi===p.field?' selected':''}>${f}</option>`).join('');
     const oOpts=RULE_OPS.map(o=>`<option value="${o.v}"${o.v===p.op?' selected':''}>${o.l}</option>`).join('');
-    row.innerHTML=`<select class="form-input M" style="flex:1;min-width:0;margin:0;padding:4px" onchange="builderProts[${i}].field=parseInt(this.value)">${fOpts}</select><select class="form-input M" style="width:58px;margin:0;padding:4px" onchange="builderProts[${i}].op=parseInt(this.value)">${oOpts}</select><input type="number" class="thr-input M" value="${p.threshold}" style="width:64px;margin:0" onchange="builderProts[${i}].threshold=parseInt(this.value)||0" placeholder="Thresh"><span style="color:var(--txd);padding:0 3px">→</span><select class="form-input M" style="width:46px;margin:0;padding:4px" onchange="builderProts[${i}].action=this.value"><option value="off"${p.action==='off'?' selected':''}>OFF</option><option value="on"${p.action==='on'?' selected':''}>ON</option></select><button class="btn btn-ghost M" style="padding:2px 7px;font-size:11px;margin:0" onclick="builderProts.splice(${i},1);renderRuleProtList()">×</button>`;
+    row.innerHTML=
+      `<select class="form-input M" style="flex:1;min-width:0;margin:0;padding:4px" onchange="builderProts[${i}].field=parseInt(this.value)">${fOpts}</select>`+
+      `<select class="form-input M" style="width:54px;flex-shrink:0;margin:0;padding:4px" onchange="builderProts[${i}].op=parseInt(this.value)">${oOpts}</select>`+
+      `<input type="number" class="thr-input M" value="${p.threshold}" style="width:60px;flex-shrink:0;margin:0" oninput="builderProts[${i}].threshold=parseInt(this.value)||0" placeholder="Thr">`+
+      `<span style="color:var(--txd);padding:0 2px;flex-shrink:0">→</span>`+
+      `<select class="form-input M" style="width:46px;flex-shrink:0;margin:0;padding:4px" onchange="builderProts[${i}].action=this.value"><option value="off"${p.action==='off'?' selected':''}>OFF</option><option value="on"${p.action==='on'?' selected':''}>ON</option></select>`+
+      `<button style="padding:2px 8px;font-size:12px;flex-shrink:0;background:var(--sf2);border:1px solid var(--bd);border-radius:5px;cursor:pointer;color:var(--txd)" onclick="builderProts.splice(${i},1);renderRuleProtList()">×</button>`;
     el.appendChild(row);
   });
 }
