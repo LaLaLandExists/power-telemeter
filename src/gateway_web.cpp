@@ -9,6 +9,8 @@
  *   GET  /api/nodes
  *   GET  /api/node/{id}/live
  *   GET  /api/node/{id}/history
+ *   GET  /api/node/{id}/rules
+ *   POST /api/node/{id}/rules   JSON body: {"rules":[...]}
  *   POST /api/node/{id}/relay
  *   POST /api/node/{id}/name
  *   POST /api/time
@@ -16,9 +18,11 @@
  *
  * WebSocket ws://<ip>/ws
  *   Commands: relay_manual, relay_schedule, relay_clear, set_threshold,
- *             nudge, rename, set_time, clear_energy, clear_all_energy, get_nodes
+ *             nudge, rename, set_time, clear_energy, clear_all_energy,
+ *             get_nodes, set_rules
  *   Push:     telemetry, nodes, name_changed, time_set, relay_ack, schedule_ack,
- *             clear_ack, threshold_ack, nudge_ack, energy_cleared, all_energy_cleared
+ *             clear_ack, threshold_ack, nudge_ack, energy_cleared,
+ *             all_energy_cleared, rules_queued
  */
 
 #include "gateway_web.h"
@@ -71,34 +75,25 @@ static void nodeToSummaryJson(JsonObject obj, const NodeState &ns)
   obj["frequency"] = roundf(ns.latest.frequency / 10.0f * 10.0f) / 10.0f;
   obj["powerFactor"] = roundf(ns.latest.powerFactor / 100.0f * 100.0f) / 100.0f;
   obj["relayState"] = ns.relayState;
-  obj["relayMode"] = ns.relayMode;
-  obj["schedState"] = ns.schedState;
   obj["alarmState"] = ns.alarmState;
   obj["alarmThreshold"] = ns.latest.alarmThreshold;
   obj["age"] = (uint32_t)((millis() - ns.lastSeen) / 1000UL);
   obj["pending"] = ns.pending;
 
-  bool hasSched = (ns.relayMode == 1 && ns.schedState > 0);
-  obj["hasSched"] = hasSched;
+  // Rule engine status
+  static const char* sourceNames[] = {"manual", "protection", "schedule", "default"};
+  JsonObject ruleStatus = obj["ruleStatus"].to<JsonObject>();
+  ruleStatus["count"]              = ns.ruleCount;
+  ruleStatus["engineActive"]       = (bool)ns.ruleEngineEnabled;
+  ruleStatus["protectionLatched"]  = (bool)ns.protectionLatched;
+  ruleStatus["relaySource"]        = sourceNames[ns.relaySource & 0x03];
+  ruleStatus["deliveryActive"]     = ns.ruleDelivery.active;
 }
 
 /** Populate a JsonObject with full detail fields (used by /api/node/{id}/live and telemetry push). */
 static void nodeToDetailJson(JsonObject obj, const NodeState &ns)
 {
   nodeToSummaryJson(obj, ns);
-
-  // Schedule fields only when active
-  bool hasSched = (ns.relayMode == 1 && ns.schedState > 0);
-  if (hasSched)
-  {
-    char schedStart[6], schedEnd[6];
-    snprintf(schedStart, sizeof(schedStart), "%02d:%02d",
-             ns.latest.schedSH, ns.latest.schedSM);
-    snprintf(schedEnd, sizeof(schedEnd), "%02d:%02d",
-             ns.latest.schedEH, ns.latest.schedEM);
-    obj["schedStart"] = schedStart;
-    obj["schedEnd"] = schedEnd;
-  }
 
   // Gateway clock status
   char timeBuf[9];
@@ -424,6 +419,56 @@ static void handleWsMessage(AsyncWebSocketClient *client, const String &payload)
     return;
   }
 
+  // -- set_rules ---------------------------------------------------------------
+  // Body: { "cmd":"set_rules","node":N,"rules":[{...},...] }
+  // Each rule object: { "type":"default|schedule|protection",
+  //   "action":"on|off", "enabled":true,
+  //   "field":0-5, "op":0-4, "threshold":uint16, "hysteresis":uint16,
+  //   "onTime":0-1439, "offTime":0-1439 }
+  if (strcmp(cmd, "set_rules") == 0)
+  {
+    uint8_t idx = tdmaFindSlotByNodeId(nodeId);
+    bool ok = false;
+    if (idx != 0xFF)
+    {
+      JsonArray rulesArr = doc["rules"].as<JsonArray>();
+      uint8_t count = 0;
+      AutoRule rules[AUTORULE_MAX] = {};
+
+      for (JsonObject r : rulesArr)
+      {
+        if (count >= AUTORULE_MAX) break;
+        const char* typeStr   = r["type"]   | "default";
+        const char* actionStr = r["action"] | "off";
+        bool enabled          = r["enabled"] | true;
+
+        uint8_t rtype  = RULE_TYPE_DEFAULT;
+        if (strcmp(typeStr, "schedule")   == 0) rtype = RULE_TYPE_SCHEDULE;
+        if (strcmp(typeStr, "protection") == 0) rtype = RULE_TYPE_PROTECTION;
+
+        uint8_t raction = (strcmp(actionStr, "on") == 0) ? RULE_ACTION_ON : RULE_ACTION_OFF;
+
+        rules[count].flags   = RULE_FLAGS(enabled ? 1 : 0, rtype, raction);
+        rules[count].field   = (uint8_t)(r["field"] | 0);
+        rules[count].op      = (uint8_t)(r["op"]    | 0);
+        rules[count].param_a = (uint16_t)(r["threshold"] | r["onTime"]  | 0);
+        rules[count].param_b = (uint16_t)(r["hysteresis"] | r["offTime"] | 0);
+        rules[count]._pad    = 0;
+        count++;
+      }
+
+      ok = tdmaQueueRules(idx, rules, count);
+      if (ok) framQueueSaveRules(idx);
+    }
+
+    JsonDocument ack;
+    ack["type"]    = "rules_queued";
+    ack["node"]    = nodeId;
+    ack["success"] = ok;
+    wsSendToClient(client, ack);
+    return;
+  }
+
   // -- get_nodes ---------------------------------------------------------------
   if (strcmp(cmd, "get_nodes") == 0)
   {
@@ -632,6 +677,134 @@ static void handlePostNodeName(AsyncWebServerRequest *req)
   req->send(200, "application/json", "{\"ok\":true}");
 }
 
+/** GET /api/node/{id}/rules — returns JSON array of cached AutoRule[] */
+static void handleGetNodeRules(AsyncWebServerRequest *req)
+{
+  int nodeId = parseNodeIdFromPath(req->url());
+  if (nodeId < 1 || nodeId > MAX_NODES)
+  {
+    req->send(400, "application/json", "{\"error\":\"invalid id\"}");
+    return;
+  }
+  uint8_t idx = tdmaFindSlotByNodeId((uint8_t)nodeId);
+  if (idx == 0xFF)
+  {
+    req->send(404, "application/json", "{\"error\":\"not found\"}");
+    return;
+  }
+
+  JsonDocument doc;
+  JsonArray arr = doc.to<JsonArray>();
+
+  if (xSemaphoreTake(g_nodesMutex, pdMS_TO_TICKS(20)) == pdTRUE)
+  {
+    static const char* typeNames[]   = {"protection", "schedule", "default"};
+    static const char* actionNames[] = {"off", "on"};
+    const NodeState &ns = g_nodes[idx];
+    for (uint8_t i = 0; i < ns.rulesStored; i++)
+    {
+      const AutoRule &r = ns.rules[i];
+      JsonObject robj   = arr.add<JsonObject>();
+      robj["enabled"]   = (bool)RULE_ENABLED(r);
+      robj["type"]      = typeNames[RULE_TYPE(r) & 0x03];
+      robj["action"]    = actionNames[RULE_ACTION(r) & 0x01];
+      robj["field"]     = r.field;
+      robj["op"]        = r.op;
+      robj["param_a"]   = r.param_a;
+      robj["param_b"]   = r.param_b;
+    }
+    xSemaphoreGive(g_nodesMutex);
+  }
+
+  String json;
+  serializeJson(doc, json);
+  req->send(200, "application/json", json);
+}
+
+/** Accumulate JSON body for POST /api/node/{id}/rules into req->_tempObject. */
+static void handleNodeBody(AsyncWebServerRequest *req, uint8_t *data,
+                           size_t len, size_t index, size_t total)
+{
+  if (!req->url().endsWith("/rules")) return;
+  if (total > 1024) return;  // sanity cap — 8 rules fit comfortably in 512 bytes
+  if (index == 0)
+  {
+    req->_tempObject = malloc(total + 1);
+    if (!req->_tempObject) return;
+  }
+  if (req->_tempObject)
+  {
+    memcpy(reinterpret_cast<uint8_t*>(req->_tempObject) + index, data, len);
+    if (index + len >= total)
+      reinterpret_cast<uint8_t*>(req->_tempObject)[total] = '\0';
+  }
+}
+
+/** POST /api/node/{id}/rules — JSON body: {"rules":[...]} same schema as set_rules WS */
+static void handlePostNodeRules(AsyncWebServerRequest *req)
+{
+  int nodeId = parseNodeIdFromPath(req->url());
+  if (nodeId < 1 || nodeId > MAX_NODES)
+  {
+    req->send(400, "application/json", "{\"error\":\"invalid id\"}");
+    return;
+  }
+  uint8_t idx = tdmaFindSlotByNodeId((uint8_t)nodeId);
+  if (idx == 0xFF)
+  {
+    req->send(404, "application/json", "{\"error\":\"not found\"}");
+    return;
+  }
+
+  const char *body = req->_tempObject
+                     ? reinterpret_cast<const char*>(req->_tempObject)
+                     : "{}";
+
+  JsonDocument bodyDoc;
+  if (deserializeJson(bodyDoc, body) != DeserializationError::Ok)
+  {
+    req->send(400, "application/json", "{\"error\":\"invalid JSON\"}");
+    return;
+  }
+
+  JsonArray rulesArr = bodyDoc["rules"].as<JsonArray>();
+  uint8_t count = 0;
+  AutoRule rules[AUTORULE_MAX] = {};
+
+  for (JsonObject r : rulesArr)
+  {
+    if (count >= AUTORULE_MAX) break;
+    const char* typeStr   = r["type"]   | "default";
+    const char* actionStr = r["action"] | "off";
+    bool enabled          = r["enabled"] | true;
+
+    uint8_t rtype = RULE_TYPE_DEFAULT;
+    if (strcmp(typeStr, "schedule")   == 0) rtype = RULE_TYPE_SCHEDULE;
+    if (strcmp(typeStr, "protection") == 0) rtype = RULE_TYPE_PROTECTION;
+
+    uint8_t raction = (strcmp(actionStr, "on") == 0) ? RULE_ACTION_ON : RULE_ACTION_OFF;
+
+    rules[count].flags   = RULE_FLAGS(enabled ? 1 : 0, rtype, raction);
+    rules[count].field   = (uint8_t)(r["field"] | 0);
+    rules[count].op      = (uint8_t)(r["op"]    | 0);
+    rules[count].param_a = (uint16_t)(r["threshold"] | r["onTime"]  | 0);
+    rules[count].param_b = (uint16_t)(r["hysteresis"] | r["offTime"] | 0);
+    rules[count]._pad    = 0;
+    count++;
+  }
+
+  bool ok = tdmaQueueRules(idx, rules, count);
+  if (ok) framQueueSaveRules(idx);
+
+  JsonDocument resp;
+  resp["success"] = ok;
+  resp["node"]    = nodeId;
+  resp["count"]   = count;
+  String json;
+  serializeJson(resp, json);
+  req->send(ok ? 200 : 409, "application/json", json);
+}
+
 /** POST /api/time  body: hour=H&minute=M&second=S */
 static void handlePostTime(AsyncWebServerRequest *req)
 {
@@ -778,17 +951,22 @@ void webServerSetup()
   server.on("/api/time", HTTP_POST, handlePostTime);
 
   // Per-node routes — match on prefix, dispatch on action suffix
-  server.on("/api/node", HTTP_ANY, [](AsyncWebServerRequest *req) {
-    String path = req->url();
-    // Determine action from suffix
-    bool isPost = (req->method() == HTTP_POST);
+  server.on("/api/node", HTTP_ANY,
+    [](AsyncWebServerRequest *req) {
+      String path  = req->url();
+      bool isPost  = (req->method() == HTTP_POST);
 
-    if      (path.endsWith("/live"))    handleGetNodeLive(req);
-    else if (path.endsWith("/history")) handleGetNodeHistory(req);
-    else if (path.endsWith("/relay") && isPost)  handlePostNodeRelay(req);
-    else if (path.endsWith("/name")  && isPost)  handlePostNodeName(req);
-    else req->send(404, "application/json", "{\"error\":\"not found\"}"); 
-  });
+      if      (path.endsWith("/live"))                      handleGetNodeLive(req);
+      else if (path.endsWith("/history"))                   handleGetNodeHistory(req);
+      else if (path.endsWith("/rules") && !isPost)          handleGetNodeRules(req);
+      else if (path.endsWith("/rules") &&  isPost)          handlePostNodeRules(req);
+      else if (path.endsWith("/relay") && isPost)           handlePostNodeRelay(req);
+      else if (path.endsWith("/name")  && isPost)           handlePostNodeName(req);
+      else req->send(404, "application/json", "{\"error\":\"not found\"}");
+    },
+    nullptr,          // no file upload
+    handleNodeBody    // JSON body accumulator for POST /rules
+  );
 
   // -- Feature flags — lets the dashboard adapt without separate builds -------
   server.on("/api/features", HTTP_GET, [](AsyncWebServerRequest* req) {

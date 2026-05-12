@@ -423,7 +423,10 @@
                 <div class="relay-state-lbl">Relay State</div>
                 <div class="relay-state-val off M" id="relayState">OFF</div>
               </div>
-              <div class="relay-mode-lbl" id="relayMode">MANUAL</div>
+              <div style="display:flex;flex-direction:column;align-items:flex-end;gap:3px">
+                <div class="relay-mode-lbl" id="relayMode">MANUAL</div>
+                <span class="panel-badge M" id="ruleLatchedBadge" style="display:none;font-size:9px;background:rgba(255,56,96,.12);color:var(--dg);border-color:rgba(255,56,96,.25)">⚡ LATCHED</span>
+              </div>
             </div>
             <div class="relay-warn-tag M" id="relayWarnTag">
               <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>
@@ -461,6 +464,45 @@
                 </div>
               </div>
             </div>
+          </div>
+        </div>
+
+        <!-- Automation Rules -->
+        <div class="panel" id="rulesPanel">
+          <div class="panel-head">
+            <span class="panel-title">Automation Rules</span>
+            <span class="panel-badge M" id="ruleEngineBadge">0 rules</span>
+          </div>
+          <div class="panel-body">
+            <!-- Live rule source status -->
+            <div style="display:flex;align-items:center;gap:6px;margin-bottom:8px;flex-wrap:wrap">
+              <span style="font-size:10px;color:var(--txd);font-family:'JetBrains Mono',monospace">Source:</span>
+              <span class="panel-badge M" id="ruleSourceBadge" style="font-size:9px">MANUAL</span>
+            </div>
+            <!-- Default state -->
+            <div class="form-group" style="margin-top:0">
+              <label class="form-label">Default Relay State</label>
+              <select class="form-input M" id="ruleDefaultAction">
+                <option value="off">OFF</option>
+                <option value="on">ON</option>
+              </select>
+            </div>
+            <!-- Schedule windows -->
+            <div style="margin-top:10px">
+              <div style="font-size:10px;color:var(--txd);font-family:'JetBrains Mono',monospace;margin-bottom:4px;font-weight:700">Schedule Windows</div>
+              <div id="ruleSchedList"></div>
+              <button class="btn btn-ghost M" style="font-size:10px;margin-top:4px;width:100%;padding:4px" onclick="ruleAddSched()">+ Add Window</button>
+            </div>
+            <!-- Protection limits -->
+            <div style="margin-top:10px">
+              <div style="font-size:10px;color:var(--txd);font-family:'JetBrains Mono',monospace;margin-bottom:4px;font-weight:700">Protection Limits</div>
+              <div id="ruleProtList"></div>
+              <button class="btn btn-ghost M" style="font-size:10px;margin-top:4px;width:100%;padding:4px" onclick="ruleAddProt()">+ Add Limit</button>
+            </div>
+            <button class="btn btn-primary M" style="margin-top:12px;font-size:11px;width:100%" onclick="doApplyRules()">
+              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" style="margin-right:4px"><polyline points="20 6 9 17 4 12"/></svg>
+              Apply Rules
+            </button>
           </div>
         </div>
 

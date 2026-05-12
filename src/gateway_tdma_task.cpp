@@ -145,38 +145,50 @@ static void processUplink(uint8_t slotIdx, const TelemetryPacket& pkt, int16_t r
   ns->lastSeen   = millis();
   ns->missedSfs  = 0;
 
-  // Decode status byte
-  ns->relayState = decodeRelayState(pkt.statusByte);
-  ns->relayMode  = decodeRelayMode (pkt.statusByte);
-  ns->schedState = decodeSchedState(pkt.statusByte);
-  ns->alarmState = decodeAlarmState(pkt.statusByte);
-  ns->fwVersion  = pkt.fwVersion;
-  ns->beaconRSSI = pkt.beaconRSSI;
-  ns->seqLast    = pkt.seqCounter;
+  // Decode status byte (new AutoRule layout)
+  ns->relayState        = decodeRelayState       (pkt.statusByte);
+  ns->ruleEngineEnabled = decodeRuleEngineEnabled(pkt.statusByte);
+  ns->relaySource       = decodeRelaySource      (pkt.statusByte);
+  ns->alarmState        = decodeAlarmState       (pkt.statusByte);
+  ns->protectionLatched = decodeProtectionLatched(pkt.statusByte);
+  ns->ruleCount         = pkt.ruleCount;
+  ns->fwVersion         = pkt.fwVersion;
+  ns->beaconRSSI        = pkt.beaconRSSI;
+  ns->seqLast           = pkt.seqCounter;
 
   accumulateEnergy(ns, pkt.energy);
   addHistory(ns, pkt);
 
-  // Resolve pending flag: check if node state matches what was commanded
+  // Resolve pending flag for simple queued commands
   if (ns->pending) {
     bool confirmed = false;
     if (ns->queuedCmd.len >= 3 && ns->queuedCmd.data[0] == PKT_RELAY_MANUAL) {
       confirmed = (ns->relayState == ns->queuedCmd.data[2]);
-    } else if (ns->queuedCmd.len >= 7 && ns->queuedCmd.data[0] == PKT_RELAY_SCHEDULE) {
-      confirmed = (ns->relayMode == 1 && ns->schedState > 0);
     } else if (ns->queuedCmd.len >= 2 && ns->queuedCmd.data[0] == PKT_RELAY_CLEAR) {
-      confirmed = (ns->relayMode == 0 && ns->schedState == 0);
+      confirmed = (ns->ruleCount == 0 && !ns->ruleEngineEnabled);
     } else {
-      // Nudge and threshold have nothing to echo in the status byte.
-      // The DL was already transmitted; receiving any UL means the node
-      // processed its slot and applied the command — clear immediately.
+      // Threshold, nudge, schedule: any UL after TX is sufficient confirmation.
       confirmed = true;
     }
     if (confirmed) ns->pending = false;
   }
-  // Also clear pending on timeout regardless of command type
+
+  // Resolve rule delivery commit confirmation: check echoed ruleCount
+  if (ns->ruleDelivery.active &&
+      ns->ruleDelivery.step > ns->ruleDelivery.ruleCount) {
+    // Commit step was sent last superframe; check the echo
+    if (ns->ruleCount == ns->ruleDelivery.expectedCount) {
+      ns->ruleDelivery.active = false;
+      ns->pending = false;
+      logAsync("[GW-DL] Slot%d rule delivery confirmed count=%d\n",
+               slotIdx + 1, ns->ruleCount);
+    }
+  }
+
+  // Clear pending on timeout regardless of command type
   if (ns->pending && (millis() - ns->pendingSentAt) >= PENDING_TIMEOUT_MS) {
-    ns->pending = false;
+    ns->pending             = false;
+    ns->ruleDelivery.active = false;
   }
 
   xSemaphoreGive(g_nodesMutex);
@@ -232,6 +244,36 @@ static void sendBeacon() {
 // -----------------------------------------------------------------------------
 static void sendDownlink(uint8_t slotIdx) {
   NodeState* ns = &g_nodes[slotIdx];
+
+  // Rule delivery state machine takes priority over single queued commands.
+  if (ns->ruleDelivery.active) {
+    uint8_t step = ns->ruleDelivery.step;
+    uint8_t totalSteps = ns->ruleDelivery.ruleCount + 2;  // clear + N rules + commit
+
+    uint8_t txBuf[MAX_DL_PAYLOAD_LEN];
+    memset(txBuf, 0, MAX_DL_PAYLOAD_LEN);
+    memcpy(txBuf, ns->ruleDelivery.pkts[step], MAX_DL_PAYLOAD_LEN);
+
+    pktEncrypt(txBuf, MAX_DL_PAYLOAD_LEN, g_sfCount, (uint8_t)(slotIdx + 1), PKT_DIR_DL);
+    int16_t st = radio.transmit(txBuf, MAX_DL_PAYLOAD_LEN);
+    if (st == RADIOLIB_ERR_NONE) {
+      ns->pendingSentAt = millis();
+      logAsync("[GW-DL] Slot%d rule step %d/%d type=0x%02X idx=0x%02X\n",
+               slotIdx + 1, step + 1, totalSteps,
+               ns->ruleDelivery.pkts[step][0],
+               ns->ruleDelivery.pkts[step][2]);
+      ns->ruleDelivery.step++;
+      if (ns->ruleDelivery.step >= totalSteps) {
+        // Commit packet just sent — wait for echo confirmation in processUplink()
+        ns->pending = true;
+      }
+    } else {
+      logAsync("[GW-DL] TX error %d slot%d (rule step %d)\n", st, slotIdx + 1, step);
+    }
+    return;
+  }
+
+  // Standard single-command path
   if (!ns->queuedCmd.active || ns->queuedCmd.len < 2) return;
 
   uint8_t txBuf[MAX_DL_PAYLOAD_LEN];
@@ -501,4 +543,57 @@ uint8_t tdmaFindSlotByNodeId(uint8_t nodeId) {
     if (g_nodes[i].active && g_nodes[i].slotId == nodeId) return i;
   }
   return 0xFF;
+}
+
+// Build and queue a full rule set delivery for a node.
+// Populates RuleDelivery with pre-encoded DlRulePacket payloads.
+// Sequence: CLEAR (step 0) → rule[0..N-1] (steps 1..N) → COMMIT (step N+1).
+bool tdmaQueueRules(uint8_t slotIdx, const AutoRule* rules, uint8_t count) {
+  if (slotIdx >= MAX_NODES || count > AUTORULE_MAX) return false;
+
+  bool ok = false;
+  if (xSemaphoreTake(g_nodesMutex, pdMS_TO_TICKS(20)) == pdTRUE) {
+    NodeState* ns = &g_nodes[slotIdx];
+    if (ns->active) {
+      RuleDelivery& rd = ns->ruleDelivery;
+      memset(&rd, 0, sizeof(rd));
+      rd.ruleCount     = count;
+      rd.expectedCount = count;
+
+      // Step 0: CLEAR packet (ruleIndex=0xFE)
+      rd.pkts[0][0] = PKT_SET_RULE;
+      rd.pkts[0][1] = ns->slotId;
+      rd.pkts[0][2] = 0xFE;
+      // steps 1..count: individual AutoRule packets
+      for (uint8_t i = 0; i < count; i++) {
+        uint8_t* p = rd.pkts[1 + i];
+        p[0] = PKT_SET_RULE;
+        p[1] = ns->slotId;
+        p[2] = i;                                          // ruleIndex
+        p[3] = rules[i].flags;
+        p[4] = (uint8_t)((rules[i].field & 0x0F) << 4)
+              | (rules[i].op & 0x0F);                     // field_op
+        memcpy(&p[5], &rules[i].param_a, 2);
+        memcpy(&p[7], &rules[i].param_b, 2);
+      }
+      // Last step: COMMIT packet (ruleIndex=0xFF)
+      uint8_t commitStep = count + 1;
+      rd.pkts[commitStep][0] = PKT_SET_RULE;
+      rd.pkts[commitStep][1] = ns->slotId;
+      rd.pkts[commitStep][2] = 0xFF;
+
+      rd.step   = 0;
+      rd.active = true;
+      ns->pending       = true;
+      ns->pendingSentAt = millis();
+
+      // Cache the rules in NodeState for dashboard GET and FRAM persistence
+      memcpy(ns->rules, rules, count * sizeof(AutoRule));
+      ns->rulesStored = count;
+
+      ok = true;
+    }
+    xSemaphoreGive(g_nodesMutex);
+  }
+  return ok;
 }

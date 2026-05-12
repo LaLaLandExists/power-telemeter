@@ -32,6 +32,7 @@
  * ---------------
  *   v1 — initial layout (no label field, block size 1936)
  *   v2 — added label[30] at +16, history shifted to +48, block size 1968
+ *   v3 — appended ruleCount(1) + AutoRule[8](64) at +1968, block size 2033
  */
 #pragma once
 #include <stdint.h>
@@ -78,6 +79,19 @@ void framSaveHistory(uint8_t nodeIdx);
  * @param nodeIdx  0-based index into g_nodes[] (0–7)
  */
 void framSaveLabel(uint8_t nodeIdx);
+
+/**
+ * Persist the AutoRule set for one node slot (ruleCount + rules[]).
+ * @param nodeIdx  0-based index into g_nodes[] (0–7)
+ */
+void framSaveRules(uint8_t nodeIdx);
+
+/**
+ * Queue a deferred FRAM save of AutoRules for one slot.
+ * Non-blocking: the request is dropped silently if the queue is full.
+ * @param nodeIdx  0-based node index (0–7)
+ */
+void framQueueSaveRules(uint8_t nodeIdx);
 
 /**
  * Start the background FRAM drain task (Core 0, priority 0).

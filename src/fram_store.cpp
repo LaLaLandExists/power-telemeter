@@ -19,7 +19,7 @@
 // Layout constants
 // ---------------------------------------------------------------------------
 static constexpr uint32_t FRAM_MAGIC        = 0xDEADF00DUL;
-static constexpr uint8_t  FRAM_VERSION      = 2;
+static constexpr uint8_t  FRAM_VERSION      = 3;
 static constexpr uint16_t FRAM_HEADER_BASE  = 0x0000;   // magic(4) + ver(1) + pad(11)
 static constexpr uint16_t FRAM_NODES_BASE   = 0x0010;   // first node block
 
@@ -31,11 +31,15 @@ static constexpr uint16_t OFF_HIST_HEAD     = 8;    // int32_t
 static constexpr uint16_t OFF_HIST_COUNT    = 12;   // int32_t
 static constexpr uint16_t OFF_LABEL         = 16;   // char[30]
 static constexpr uint16_t OFF_PAD2          = 46;   // uint16_t (align history to 48)
-static constexpr uint16_t OFF_HISTORY       = 48;   // HistoryPoint[120]
+static constexpr uint16_t OFF_HISTORY       = 48;   // HistoryPoint[120] — 1920 bytes
+// v3 extension (appended after history)
+static constexpr uint16_t OFF_RULE_COUNT    = 1968; // uint8_t
+static constexpr uint16_t OFF_RULES         = 1969; // AutoRule[8] — 64 bytes
 
-static constexpr uint16_t LABEL_BYTES       = 30;   // sizeof(NodeState::label)
+static constexpr uint16_t LABEL_BYTES       = 30;
 static constexpr uint16_t HISTORY_BYTES     = HISTORY_MAX_POINTS * sizeof(HistoryPoint);
-static constexpr uint16_t NODE_BLOCK_SIZE   = OFF_HISTORY + HISTORY_BYTES;  // 1968
+static constexpr uint16_t RULES_BYTES       = AUTORULE_MAX * sizeof(AutoRule);
+static constexpr uint16_t NODE_BLOCK_SIZE   = OFF_RULES + RULES_BYTES;  // 2033
 
 // ---------------------------------------------------------------------------
 // Module state
@@ -145,19 +149,37 @@ void framSaveLabel(uint8_t nodeIdx)
            nodeIdx + 1, ns.deviceUID, ns.label);
 }
 
+void framSaveRules(uint8_t nodeIdx)
+{
+  if (!s_framOk) return;
+
+  const NodeState& ns = g_nodes[nodeIdx];
+  uint16_t base = nodeBase(nodeIdx);
+
+  s_fram.write16(base + OFF_UID, ns.deviceUID);
+  s_fram.write8(base + OFF_RULE_COUNT, ns.rulesStored);
+  s_fram.write(base + OFF_RULES,
+               reinterpret_cast<uint8_t*>(const_cast<AutoRule*>(ns.rules)),
+               RULES_BYTES);
+
+  logAsync("[FRAM] Slot %u (UID=0x%04X): saved %d rules\n",
+           nodeIdx + 1, ns.deviceUID, ns.rulesStored);
+}
+
 // ---------------------------------------------------------------------------
 // Deferred save task — keeps I²C writes off the Core 1 TDMA task
 // ---------------------------------------------------------------------------
 
-// Queue message encoding: bits 6:4 = operation flags, bits 3:0 = nodeIdx
+// Queue message encoding: bits 7:4 = operation flags, bits 3:0 = nodeIdx
 #define FRAM_SAVE_ENERGY  0x10u
 #define FRAM_SAVE_HISTORY 0x20u
 #define FRAM_RESTORE      0x40u
+#define FRAM_SAVE_RULES   0x80u
 
 static QueueHandle_t s_framQueue = nullptr;
 
 // Static snapshot buffer — framTask is sequential so one buffer suffices.
-// Not on the task stack: avoids a 1930-byte stack frame.
+// Not on the task stack: avoids a large stack frame.
 static struct {
   uint16_t     deviceUID;
   uint32_t     accumEnergy;
@@ -165,6 +187,8 @@ static struct {
   int32_t      histCount;
   char         label[LABEL_BYTES];
   HistoryPoint history[HISTORY_MAX_POINTS];
+  uint8_t      rulesStored;
+  AutoRule     rules[AUTORULE_MAX];
 } s_snap;
 
 void framQueueSave(uint8_t nodeIdx, bool saveEnergy, bool saveHistory)
@@ -180,6 +204,13 @@ void framQueueRestore(uint8_t nodeIdx)
 {
   if (!s_framQueue) return;
   uint8_t msg = (nodeIdx & 0x0Fu) | FRAM_RESTORE;
+  xQueueSend(s_framQueue, &msg, 0);
+}
+
+void framQueueSaveRules(uint8_t nodeIdx)
+{
+  if (!s_framQueue) return;
+  uint8_t msg = (nodeIdx & 0x0Fu) | FRAM_SAVE_RULES;
   xQueueSend(s_framQueue, &msg, 0);
 }
 
@@ -212,35 +243,46 @@ static void framTask(void* /*params*/)
       }
       if (framSlot == 0xFF) continue;
 
-      // Read label, energy, and history from FRAM without holding the mutex
-      // (~47 ms at 400 kHz for the history block).
+      // Read label, energy, history, and rules from FRAM without holding the mutex.
       uint16_t base = nodeBase(framSlot);
       s_fram.read(base + OFF_LABEL,
                   reinterpret_cast<uint8_t*>(s_snap.label), LABEL_BYTES);
       s_snap.label[LABEL_BYTES - 1] = '\0';
-      s_snap.accumEnergy = s_fram.read32(base + OFF_ENERGY);
-      s_snap.histHead    = (int32_t)s_fram.read32(base + OFF_HIST_HEAD);
-      s_snap.histCount   = (int32_t)s_fram.read32(base + OFF_HIST_COUNT);
+      s_snap.accumEnergy  = s_fram.read32(base + OFF_ENERGY);
+      s_snap.histHead     = (int32_t)s_fram.read32(base + OFF_HIST_HEAD);
+      s_snap.histCount    = (int32_t)s_fram.read32(base + OFF_HIST_COUNT);
       s_fram.read(base + OFF_HISTORY,
                   reinterpret_cast<uint8_t*>(s_snap.history),
                   HISTORY_BYTES);
+      s_snap.rulesStored  = s_fram.read8(base + OFF_RULE_COUNT);
+      if (s_snap.rulesStored > AUTORULE_MAX) s_snap.rulesStored = 0;
+      if (s_snap.rulesStored > 0) {
+        s_fram.read(base + OFF_RULES,
+                    reinterpret_cast<uint8_t*>(s_snap.rules),
+                    RULES_BYTES);
+      }
 
       if (xSemaphoreTake(g_nodesMutex, pdMS_TO_TICKS(20)) == pdTRUE) {
         if (s_snap.label[0] != '\0') {
           strlcpy(g_nodes[idx].label, s_snap.label, sizeof(g_nodes[idx].label));
         }
-        g_nodes[idx].accumEnergy = s_snap.accumEnergy;
-        g_nodes[idx].histHead    = (int)s_snap.histHead;
-        g_nodes[idx].histCount   = (int)s_snap.histCount;
+        g_nodes[idx].accumEnergy  = s_snap.accumEnergy;
+        g_nodes[idx].histHead     = (int)s_snap.histHead;
+        g_nodes[idx].histCount    = (int)s_snap.histCount;
         memcpy(g_nodes[idx].history, s_snap.history, HISTORY_BYTES);
+        g_nodes[idx].rulesStored  = s_snap.rulesStored;
+        if (s_snap.rulesStored > 0) {
+          memcpy(g_nodes[idx].rules, s_snap.rules, RULES_BYTES);
+        }
         xSemaphoreGive(g_nodesMutex);
       }
 
       logAsync("[FRAM] Slot %u (UID=0x%04X) restored from FRAM slot %u: "
-               "label=\"%s\" energy=%lu Wh histCount=%d\n",
+               "label=\"%s\" energy=%lu Wh histCount=%d rules=%u\n",
                idx + 1, nodeUID, framSlot + 1,
                s_snap.label[0] ? s_snap.label : "(none)",
-               (unsigned long)s_snap.accumEnergy, (int)s_snap.histCount);
+               (unsigned long)s_snap.accumEnergy,
+               (int)s_snap.histCount, s_snap.rulesStored);
       continue;
     }
 
@@ -273,6 +315,21 @@ static void framTask(void* /*params*/)
       s_fram.write(base + OFF_HISTORY,
                    reinterpret_cast<uint8_t*>(s_snap.history),
                    HISTORY_BYTES);
+    }
+
+    if (msg & FRAM_SAVE_RULES) {
+      if (xSemaphoreTake(g_nodesMutex, pdMS_TO_TICKS(20)) == pdTRUE) {
+        s_snap.deviceUID   = g_nodes[idx].deviceUID;
+        s_snap.rulesStored = g_nodes[idx].rulesStored;
+        memcpy(s_snap.rules, g_nodes[idx].rules, RULES_BYTES);
+        xSemaphoreGive(g_nodesMutex);
+      }
+      uint16_t base = nodeBase(idx);
+      s_fram.write16(base + OFF_UID, s_snap.deviceUID);
+      s_fram.write8(base + OFF_RULE_COUNT, s_snap.rulesStored);
+      s_fram.write(base + OFF_RULES,
+                   reinterpret_cast<uint8_t*>(s_snap.rules),
+                   RULES_BYTES);
     }
   }
 }

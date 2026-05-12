@@ -103,6 +103,7 @@ static const float LORA_CHANNELS[N_CHANNELS] = {
 #define PKT_RELAY_CLEAR         0x05    // GW   -> Node,  2 bytes (DlHeader only)
 #define PKT_THRESHOLD           0x06    // GW   -> Node,  4 bytes (DlHeader + thresh_lo/hi)
 #define PKT_NUDGE               0x07    // GW   -> Node,  2 bytes (DlHeader only)
+#define PKT_SET_RULE            0x08    // GW   -> Node,  7 bytes (DlHeader + 5) — AutoRule delivery
 #define PKT_JOIN_REQUEST        0xA0    // Node -> GW,    4 bytes
 #define PKT_JOIN_ACK            0xA1    // GW   -> Node,  4 bytes
 
@@ -138,35 +139,39 @@ struct BeaconPacket {
 static_assert(sizeof(BeaconPacket) == 8, "BeaconPacket must be 8 bytes");
 
 /**
- * TelemetryPacket (30 bytes) — node uplink every superframe.
- * Status byte packs relayState, relayMode, schedState, alarmState.
+ * TelemetryPacket (32 bytes) — node uplink every superframe.
  *
- * statusByte layout:
- *   bit 0   : relayState  (0=OFF, 1=ON)
- *   bit 1   : relayMode   (0=MANUAL, 1=SCHEDULED)
- *   bits 3:2: schedState  (00=NONE, 01=WAITING, 10=ACTIVE)
- *   bit 4   : alarmState  (0=OK, 1=ALARM)
- *   bits 7:5: reserved
+ * statusByte layout (AutoRule firmware):
+ *   bit 0   : relayState        (0=OFF, 1=ON)
+ *   bit 1   : ruleEngineEnabled (1 = rules loaded and evaluating)
+ *   bits 3:2: relaySource       (0=manual, 1=protection, 2=schedule, 3=default)
+ *   bit 4   : alarmState        (0=OK, 1=ALARM — power > alarmThreshold)
+ *   bit 5   : protectionLatched (1 = at least one protection rule is latched)
+ *   bits 7:6: reserved
+ *
+ * ruleCount: number of active AutoRules on the node (0-8).
+ *   Carried in the schedSH field (formerly "Schedule start hour").
+ *   Fields schedSM / schedEH / schedEM are zero-reserved.
  */
 struct TelemetryPacket {
   uint8_t  pktType;          // 0x01
-  uint8_t  nodeId;           // 1–8 (assigned slot ID)
+  uint8_t  nodeId;           // 1-8 (assigned slot ID)
   uint16_t uid;              // CRC-16 of node MAC — gateway verifies slot ownership
-  uint16_t voltage;          // ÷10  -> volts     (2204 = 220.4 V)
-  uint32_t current;          // ÷1000 -> amps     (2345 = 2.345 A)
-  uint32_t power;            // ÷10  -> watts     (5163 = 516.3 W)
+  uint16_t voltage;          // x10  -> volts     (2204 = 220.4 V)
+  uint32_t current;          // x1000 -> amps     (2345 = 2.345 A)
+  uint32_t power;            // x10  -> watts     (5163 = 516.3 W)
   uint32_t energy;           // Wh increment since last packet (node-side delta; handles rollover)
-  uint16_t frequency;        // ÷10  -> Hz        (600  = 60.0 Hz)
-  uint16_t powerFactor;      // ÷100 -> 0.00–1.00 (98   = 0.98)
+  uint16_t frequency;        // x10  -> Hz        (600  = 60.0 Hz)
+  uint16_t powerFactor;      // x100 -> 0.00-1.00 (98   = 0.98)
   uint8_t  statusByte;       // packed bitfield (see above)
-  uint8_t  schedSH;          // Schedule start hour
-  uint8_t  schedSM;          // Schedule start minute
-  uint8_t  schedEH;          // Schedule end hour
-  uint8_t  schedEM;          // Schedule end minute
+  uint8_t  ruleCount;        // number of active AutoRules (0-8); formerly schedSH
+  uint8_t  _rsvd0;           // formerly schedSM — zero
+  uint8_t  _rsvd1;           // formerly schedEH — zero
+  uint8_t  _rsvd2;           // formerly schedEM — zero
   uint16_t alarmThreshold;   // watts
-  uint8_t  seqCounter;       // Rolling 0–255, for packet-loss detection
+  uint8_t  seqCounter;       // rolling 0-255, for packet-loss detection
   uint8_t  beaconRSSI;       // int8 cast to uint8 — RSSI of last beacon (dBm)
-  uint8_t  fwVersion;        // Firmware version
+  uint8_t  fwVersion;        // firmware version
 };
 static_assert(sizeof(TelemetryPacket) == 32, "TelemetryPacket must be 32 bytes");
 
@@ -215,6 +220,25 @@ static_assert(sizeof(ThresholdPacket) == 4, "ThresholdPacket must be 4 bytes");
 struct NudgePacket : DlHeader {};
 static_assert(sizeof(NudgePacket) == 2, "NudgePacket must be 2 bytes");
 
+/**
+ * DlRulePacket (7 bytes) — deliver one AutoRule slot, or a control command.
+ *
+ * ruleIndex semantics:
+ *   0x00–0x07  Store this rule in staging slot ruleIndex (not yet active).
+ *   0xFE       Clear all staged and active rules; set relay OFF.
+ *   0xFF       Commit: copy staging → active, persist to NVS, begin evaluation.
+ *
+ * field_op packing: upper nibble = PZEM field index, lower nibble = operator.
+ */
+struct DlRulePacket : DlHeader {
+  uint8_t  ruleIndex;  // 0-7, 0xFE (clear), 0xFF (commit)
+  uint8_t  flags;      // AutoRule.flags: [enabled:1][type:2][action:1][reserved:4]
+  uint8_t  field_op;   // [field:4 | op:4]
+  uint16_t param_a;    // threshold (protection) or ON  minutes-since-midnight (schedule)
+  uint16_t param_b;    // hysteresis (protection) or OFF minutes-since-midnight (schedule)
+};
+static_assert(sizeof(DlRulePacket) == 9, "DlRulePacket must be 9 bytes");
+
 /** JoinRequestPacket (4 bytes) — contention uplink from new node */
 struct JoinRequestPacket {
   uint8_t  pktType;    // 0xA0
@@ -233,25 +257,38 @@ struct JoinAckPacket {
 
 #pragma pack(pop)
 
-// Largest DL command (RelaySchedulePacket = 7 bytes).
+// Largest DL command (DlRulePacket = 9 bytes).
 // SF6 implicit header requires a fixed receive length; all DL frames are
 // zero-padded to this size so every slot DL window uses one implicitHeader() call.
-#define MAX_DL_PAYLOAD_LEN  sizeof(RelaySchedulePacket)
+// All smaller packets (RelaySchedulePacket = 7 bytes, etc.) are zero-padded;
+// handlers guard with len >= N before accessing fields.
+#define MAX_DL_PAYLOAD_LEN  sizeof(DlRulePacket)
 
 // -----------------------------------------------------------------------------
 // Status byte helpers
+//
+// Layout:
+//   bit 0   relayState        (0=OFF, 1=ON)
+//   bit 1   ruleEngineEnabled (1 = rules loaded and evaluating)
+//   bits 3:2 relaySource      (0=manual, 1=protection, 2=schedule, 3=default)
+//   bit 4   alarmState        (0=OK, 1=ALARM)
+//   bit 5   protectionLatched (1 = at least one protection rule latched)
+//   bits 7:6 reserved
 // -----------------------------------------------------------------------------
-inline uint8_t encodeStatus(uint8_t relayState, uint8_t relayMode,
-                              uint8_t schedState, uint8_t alarmState) {
-  return ((alarmState & 0x01) << 4) |
-          ((schedState & 0x03) << 2) |
-          ((relayMode  & 0x01) << 1) |
+inline uint8_t encodeStatus(uint8_t relayState, uint8_t ruleEngineEnabled,
+                              uint8_t relaySource, uint8_t alarmState,
+                              uint8_t protectionLatched) {
+  return ((protectionLatched  & 0x01) << 5) |
+          ((alarmState        & 0x01) << 4) |
+          ((relaySource       & 0x03) << 2) |
+          ((ruleEngineEnabled & 0x01) << 1) |
           (relayState & 0x01);
 }
-inline uint8_t decodeRelayState(uint8_t s)  { return  s        & 0x01; }
-inline uint8_t decodeRelayMode (uint8_t s)  { return (s >> 1)  & 0x01; }
-inline uint8_t decodeSchedState(uint8_t s)  { return (s >> 2)  & 0x03; }
-inline uint8_t decodeAlarmState(uint8_t s)  { return (s >> 4)  & 0x01; }
+inline uint8_t decodeRelayState       (uint8_t s) { return  s        & 0x01; }
+inline uint8_t decodeRuleEngineEnabled(uint8_t s) { return (s >> 1)  & 0x01; }
+inline uint8_t decodeRelaySource      (uint8_t s) { return (s >> 2)  & 0x03; }
+inline uint8_t decodeAlarmState       (uint8_t s) { return (s >> 4)  & 0x01; }
+inline uint8_t decodeProtectionLatched(uint8_t s) { return (s >> 5)  & 0x01; }
 
 // -----------------------------------------------------------------------------
 // Hop sequence

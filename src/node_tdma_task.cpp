@@ -23,6 +23,7 @@
  */
 
 #include "node_tdma_task.h"
+#include "auto_rule.h"
 #include "log_async.h"
 #include <RadioLib.h>
 #ifndef PZEM_FAKE
@@ -54,12 +55,6 @@ uint8_t  g_nodeSlotId     = 0;
 uint16_t g_nodeUID        = 0;
 
 uint8_t  g_relayState = 0;
-uint8_t  g_relayMode  = 0;
-uint8_t  g_schedState = 0;
-uint8_t  g_schedSH    = 0;
-uint8_t  g_schedSM    = 0;
-uint8_t  g_schedEH    = 8;
-uint8_t  g_schedEM    = 0;
 
 uint32_t g_rtcBaseSec = 0;
 uint32_t g_rtcBaseMs  = 0;
@@ -115,40 +110,6 @@ static void rtcConditionalSync(uint8_t beaconH, uint8_t beaconM, uint8_t beaconS
   }
 }
 
-// -----------------------------------------------------------------------------
-// Schedule evaluation
-// Evaluates whether current RTC time falls inside the scheduled ON window.
-// Supports midnight-wrap: endH:endM < startH:startM is allowed.
-// Updates g_schedState and calls setRelay() when g_relayMode == 1.
-// -----------------------------------------------------------------------------
-static void evaluateSchedule() {
-  if (g_relayMode != 1 || g_schedState == 0) return;
-
-  uint16_t nowMins   = (uint16_t)(rtcGetSec() / 60);
-  uint16_t startMins = (uint16_t)g_schedSH * 60 + g_schedSM;
-  uint16_t endMins   = (uint16_t)g_schedEH * 60 + g_schedEM;
-
-  bool inside;
-  if (startMins <= endMins) {
-    // Normal window: 08:00–17:00
-    inside = (nowMins >= startMins && nowMins < endMins);
-  } else {
-    // Midnight-wrap: 22:00–06:00 -> inside if >=22:00 OR <06:00
-    inside = (nowMins >= startMins || nowMins < endMins);
-  }
-
-  uint8_t newSchedState = inside ? 2 : 1;  // 2=ACTIVE, 1=WAITING
-  if (newSchedState != g_schedState) {
-    g_schedState = newSchedState;
-    logAsync("[NODE-SCHED] %s (now=%02d:%02d)\n",
-             inside ? "ACTIVE" : "WAITING",
-             nowMins / 60, nowMins % 60);
-  }
-  // Always enforce relay to match schedule — handles initial activation where
-  // g_schedState was pre-set to WAITING (1) so no state change is detected,
-  // yet the relay still needs to be driven to match the window state.
-  setRelay(inside ? 1 : 0);
-}
 
 // -----------------------------------------------------------------------------
 // PZEM_ENERGY_MAX_WH -- counter rolls over to 0 after this value.
@@ -264,32 +225,60 @@ static void handleDownlink(const uint8_t* buf, int16_t len) {
 
   switch (type) {
   case PKT_RELAY_MANUAL:   // 3 bytes: DlHeader + relayState
+    // Direct manual relay toggle. If rules are loaded the rule engine will
+    // re-evaluate at the next 500 ms pzemTask cycle; the 5-second toggle rate
+    // limiter in applyRelayState() prevents an immediate flip-back.
     if (len >= 3) {
-      g_relayMode  = 0;
-      g_schedState = 0;
       setRelay(buf[2]);
       logAsync("[NODE-DL] Relay manual -> %s\n", buf[2] ? "ON" : "OFF");
     }
     break;
 
   case PKT_RELAY_SCHEDULE: // 7 bytes: DlHeader + onState + sH + sM + eH + eM
+    // Legacy command: convert to a 2-rule set (DEFAULT OFF + SCHEDULE window)
+    // and commit immediately so existing dashboard schedule panel still works.
     if (len >= 7) {
-      g_relayMode  = 1;
-      g_schedSH    = buf[3];
-      g_schedSM    = buf[4];
-      g_schedEH    = buf[5];
-      g_schedEM    = buf[6];
-      g_schedState = 1;     // WAITING; evaluateSchedule() will flip to ACTIVE
-      evaluateSchedule();
-      logAsync("[NODE-DL] Schedule set %02d:%02d - %02d:%02d\n",
-               g_schedSH, g_schedSM, g_schedEH, g_schedEM);
+      uint16_t onMins  = (uint16_t)buf[3] * 60u + buf[4];
+      uint16_t offMins = (uint16_t)buf[5] * 60u + buf[6];
+      // CLEAR
+      { uint8_t p[1] = {0xFE}; handleRulePacket(p, 1); }
+      // Rule 0: DEFAULT OFF
+      {
+        uint8_t p[7] = {0x00, RULE_FLAGS(1, RULE_TYPE_DEFAULT, RULE_ACTION_OFF),
+                        0x00, 0x00, 0x00, 0x00, 0x00};
+        handleRulePacket(p, 7);
+      }
+      // Rule 1: SCHEDULE window -> relay ON
+      {
+        uint8_t p[7];
+        p[0] = 0x01;
+        p[1] = RULE_FLAGS(1, RULE_TYPE_SCHEDULE, RULE_ACTION_ON);
+        p[2] = 0x00;
+        memcpy(&p[3], &onMins,  2);
+        memcpy(&p[5], &offMins, 2);
+        handleRulePacket(p, 7);
+      }
+      // COMMIT
+      { uint8_t p[1] = {0xFF}; handleRulePacket(p, 1); }
+      logAsync("[NODE-DL] Schedule->rules %02d:%02d-%02d:%02d\n",
+               buf[3], buf[4], buf[5], buf[6]);
     }
     break;
 
-  case PKT_RELAY_CLEAR:    // 2 bytes: DlHeader only
-    g_relayMode  = 0;
-    g_schedState = 0;
-    logAsync("[NODE-DL] Schedule cleared\n");
+  case PKT_RELAY_CLEAR:    // 2 bytes: DlHeader only — wipe all rules
+    {
+      uint8_t p[1] = {0xFE}; handleRulePacket(p, 1);
+      uint8_t q[1] = {0xFF}; handleRulePacket(q, 1);
+      logAsync("[NODE-DL] Rules cleared\n");
+    }
+    break;
+
+  case PKT_SET_RULE:       // 9 bytes: DlHeader + 7 bytes rule payload
+    // buf[2] = ruleIndex, buf[3] = flags, buf[4] = field_op,
+    // buf[5..6] = param_a, buf[7..8] = param_b
+    if (len >= 7) {
+      handleRulePacket(buf + 2, (uint8_t)(len - 2));
+    }
     break;
 
   case PKT_THRESHOLD:      // 4 bytes: DlHeader + thresh_lo + thresh_hi
@@ -362,11 +351,16 @@ static void transmitTelemetry(uint16_t sfCount) {
   pkt.pktType    = PKT_TELEMETRY;
   pkt.nodeId     = g_nodeSlotId;
   pkt.uid        = g_nodeUID;
-  pkt.statusByte = encodeStatus(g_relayState, g_relayMode, g_schedState, alarmState);
-  pkt.schedSH    = g_schedSH;
-  pkt.schedSM    = g_schedSM;
-  pkt.schedEH    = g_schedEH;
-  pkt.schedEM    = g_schedEM;
+  pkt.statusByte = encodeStatus(
+      g_relayState,
+      ruleEngineEnabled()     ? 1u : 0u,
+      (uint8_t)ruleLastSource(),
+      alarmState,
+      ruleProtectionLatched() ? 1u : 0u);
+  pkt.ruleCount  = ruleGetCount();
+  pkt._rsvd0     = 0;
+  pkt._rsvd1     = 0;
+  pkt._rsvd2     = 0;
   pkt.seqCounter = ++g_seqCounter;
   pkt.beaconRSSI = (uint8_t)(int8_t)g_beaconRSSI;
   pkt.fwVersion  = FW_VERSION;
@@ -482,8 +476,7 @@ static void nodeTdmaTask(void* /*params*/) {
         // Update schedule RTC (conditional - see dual clock design)
         rtcConditionalSync(bcn.hour, bcn.minute, bcn.second);
 
-        // Evaluate relay schedule
-        evaluateSchedule();
+        // Rule evaluation runs in pzemTask every 500 ms; nothing to do here.
 
         if (g_nodeRegistered) {
           // Epoch mismatch means the gateway rebooted or reassigned slots since
@@ -699,21 +692,29 @@ static void pzemTask(void* /*params*/) {
                           threshWatts, ok ? "OK" : "FAIL");
     }
 
+    // -- AutoRule evaluation -------------------------------------------------
+    // Build a PzemSnapshot from the current g_pzem values (scaled integers).
+    // Runs every 500 ms — same cadence as the PZEM read.
+    if (ruleEngineEnabled()) {
+      PzemSnapshot snap = {};
+      if (xSemaphoreTake(g_pzemMutex, pdMS_TO_TICKS(20)) == pdTRUE) {
+        snap.voltage     = (uint16_t)(g_pzem.voltage     * 10.0f);
+        snap.current     = (uint16_t)(g_pzem.current     * 1000.0f);
+        snap.power       = (uint16_t)(g_pzem.power       * 10.0f);
+        snap.frequency   = (uint16_t)(g_pzem.frequency   * 10.0f);
+        snap.powerFactor = (uint16_t)(g_pzem.powerFactor * 100.0f);
+        xSemaphoreGive(g_pzemMutex);
+      }
+      EvalResult res = evaluateRules(rtcGetMinutes(), snap);
+      applyRelayState(res.action, millis());
+    }
+
     vTaskDelay(500 / portTICK_PERIOD_MS);
   }
 }
 #endif // !PZEM_FAKE
 
-// -----------------------------------------------------------------------------
-// Schedule evaluation periodic task (Core 0, low frequency)
-// Evaluates relay schedule every 10 s so the TDMA task doesn't have to.
-// -----------------------------------------------------------------------------
-static void schedTask(void* /*params*/) {
-  while (true) {
-    evaluateSchedule();
-    vTaskDelay(10000 / portTICK_PERIOD_MS);
-  }
-}
+// schedTask removed — rule evaluation is merged into pzemTask (500 ms cadence).
 
 // -----------------------------------------------------------------------------
 // Task launcher
@@ -725,15 +726,16 @@ void nodeTdmaTaskStart() {
   g_nodeUID = computeDeviceUID();
   Serial.printf("[NODE] Device UID = 0x%04X\n", g_nodeUID);
 
-  // PZEM sampling - Core 0, priority 1 (below WiFi if present)
+  // Load AutoRules and latch state from NVS before any task starts.
+  ruleNvsLoad();
+  ruleNvsLoadState();
+
+  // PZEM sampling + rule evaluation - Core 0, priority 1
 #ifdef PZEM_FAKE
   xTaskCreatePinnedToCore(fakePzemTask, "PZEM", 4096, nullptr, 1, nullptr, 0);
 #else
   xTaskCreatePinnedToCore(pzemTask,     "PZEM", 4096, nullptr, 1, nullptr, 0);
 #endif
-
-  // Schedule evaluator - Core 0, very low priority
-  xTaskCreatePinnedToCore(schedTask, "SCHED", 2048, nullptr, 1, nullptr, 0);
 
   // LED state + nudge task - Core 0, priority 1; drives two-color state LED
   xTaskCreatePinnedToCore(ledTask, "LED", 1024, nullptr, 1,

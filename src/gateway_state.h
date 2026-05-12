@@ -5,6 +5,7 @@
  */
 #pragma once
 #include "tdma_protocol.h"
+#include "auto_rule.h"
 
 // -----------------------------------------------------------------------------
 // History circular buffer — per node, 120 points, ~3 s apart
@@ -20,12 +21,33 @@ struct HistoryPoint {
 };
 
 // -----------------------------------------------------------------------------
-// Pending downlink command — up to 8 bytes, queued per node
+// Pending downlink command — up to MAX_DL_PAYLOAD_LEN bytes, queued per node
 // -----------------------------------------------------------------------------
 struct PendingCmd {
   bool    active;
-  uint8_t data[8];
+  uint8_t data[9];   // MAX_DL_PAYLOAD_LEN = 9 (DlRulePacket)
   uint8_t len;
+};
+
+// -----------------------------------------------------------------------------
+// Multi-superframe rule delivery state machine
+//
+// Sending a full RuleSet requires K+2 superframes:
+//   step 0        — send CLEAR (ruleIndex=0xFE)
+//   step 1..K     — send rule[step-1]
+//   step K+1      — send COMMIT (ruleIndex=0xFF)
+//
+// The gateway TDMA task advances step on each successful DL TX.
+// After commit is sent, pending is set to wait for echo confirmation via
+// the node's ruleCount field in the next TelemetryPacket.
+// -----------------------------------------------------------------------------
+struct RuleDelivery {
+  bool     active;
+  uint8_t  step;           // current step (0 = CLEAR, 1..N = rule, N+1 = COMMIT)
+  uint8_t  ruleCount;      // total rules to deliver (K)
+  uint8_t  expectedCount;  // expected ruleCount echo after commit
+  // Pre-encoded DlRulePacket payloads: index 0 = CLEAR, 1..K = rules, K+1 = COMMIT
+  uint8_t  pkts[10][9];    // max 10 steps (1 clear + 8 rules + 1 commit), 9 bytes each
 };
 
 // -----------------------------------------------------------------------------
@@ -47,10 +69,16 @@ struct NodeState {
   uint16_t missedSfs;         // consecutive superframes with no UL from this node
 
   // Decoded status fields (decoded from statusByte for fast access)
-  uint8_t  relayState;        // 0=OFF, 1=ON
-  uint8_t  relayMode;         // 0=MANUAL, 1=SCHEDULED
-  uint8_t  schedState;        // 0=NONE, 1=WAITING, 2=ACTIVE
-  uint8_t  alarmState;        // 0=OK, 1=ALARM
+  uint8_t  relayState;          // 0=OFF, 1=ON
+  uint8_t  ruleEngineEnabled;   // 1 = rule engine active on node
+  uint8_t  relaySource;         // 0=manual,1=protection,2=schedule,3=default
+  uint8_t  alarmState;          // 0=OK, 1=ALARM
+  uint8_t  protectionLatched;   // 1 = at least one protection rule latched
+  uint8_t  ruleCount;           // active rule count echoed from node
+
+  // AutoRule storage (gateway caches these for FRAM and dashboard GET)
+  AutoRule rules[AUTORULE_MAX];
+  uint8_t  rulesStored;         // number of valid entries in rules[]
 
   // Gateway-side energy accumulation.
   // pkt.energy carries Wh increments (node-side delta encoding), so the
@@ -58,9 +86,10 @@ struct NodeState {
   uint32_t accumEnergy;       // Accumulated Wh since last clear
 
   // Pending command tracking
-  bool     pending;           // True while awaiting confirmation from node
-  uint32_t pendingSentAt;     // millis() when command was sent
-  PendingCmd queuedCmd;       // Command to send in next DL slot
+  bool        pending;        // True while awaiting confirmation from node
+  uint32_t    pendingSentAt;  // millis() when command was sent
+  PendingCmd  queuedCmd;      // Command to send in next DL slot
+  RuleDelivery ruleDelivery;  // Multi-superframe rule delivery state machine
 
   // History buffer
   HistoryPoint history[HISTORY_MAX_POINTS];

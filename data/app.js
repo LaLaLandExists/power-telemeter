@@ -3,6 +3,9 @@ let cNid=null,chart=null,cMet='power',socket=null,wsOk=false,fbT=null;
 let NC=[],gwTimeSet=false,gwTime='--:--:--';
 let pendingCmd={};
 let relayOffAt={};
+let currentRules={};    // nodeId → AutoRule[] from /api/node/{id}/rules
+let builderScheds=[];   // schedule rows in the rule builder
+let builderProts=[];    // protection rows in the rule builder
 let costRate=parseFloat(localStorage.getItem('pt-costRate'))||12.00;
 
 const MC={
@@ -160,7 +163,7 @@ function onMsg(m){
     const prevRs=prev?prev.relayState:undefined;
     if(n.relayState===1){delete relayOffAt[n.id];}
     else if(n.relayState===0&&prevRs!==0){relayOffAt[n.id]=Date.now();}
-    const o={id:n.id,label:n.label,online:n.online,rssi:n.rssi,voltage:n.voltage,current:n.current,power:n.power,energy:n.energy,frequency:n.frequency,powerFactor:n.powerFactor,relayState:n.relayState,relayMode:n.relayMode,schedState:n.schedState,alarmState:n.alarmState,age:n.age,pending:n.pending,hasSched:n.hasSched,schedStart:n.schedStart,schedEnd:n.schedEnd};
+    const o={id:n.id,label:n.label,online:n.online,rssi:n.rssi,voltage:n.voltage,current:n.current,power:n.power,energy:n.energy,frequency:n.frequency,powerFactor:n.powerFactor,relayState:n.relayState,alarmState:n.alarmState,age:n.age,pending:n.pending,ruleStatus:n.ruleStatus};
     const i=NC.findIndex(x=>x.id===n.id);if(i>=0)Object.assign(NC[i],o);else NC.push(o);
     if(!cNid)renderGrid(NC);
     if(cNid===n.id){updateDetail(o);addChartPoint(n);}
@@ -175,6 +178,7 @@ function onMsg(m){
   else if(m.type==='threshold_ack'){if(!m.success){if(m.node!==undefined)delete pendingCmd[m.node];alert('Threshold command failed');}}
   else if(m.type==='nudge_ack'){if(!m.success){if(m.node!==undefined)delete pendingCmd[m.node];alert('Nudge failed');}}
   else if(m.type==='relay_ack'||m.type==='schedule_ack'||m.type==='clear_ack'){if(!m.success){if(m.node!==undefined)delete pendingCmd[m.node];alert('Command failed');}}
+  else if(m.type==='rules_queued'){if(!m.success)alert('Rules delivery failed — check node is online and try again.');}
   else if(m.type==='energy_cleared'){const i=NC.findIndex(x=>x.id===m.node);if(i>=0)NC[i].energy=0;if(cNid===m.node)updateDetail(NC.find(x=>x.id===cNid)||{});}
   else if(m.type==='all_energy_cleared'){NC.forEach(n=>n.energy=0);if(cNid){const c=NC.find(x=>x.id===cNid);if(c)updateDetail(c);}if(!cNid)renderGrid(NC);}
   else if(m.type==='log')appendLog(m.line);
@@ -296,7 +300,7 @@ function showDetail(id){
     b.style.color=active?'var(--ac)':'';
     b.style.background=active?'rgba(0,229,160,.08)':'';
   });
-  fetchHistory(id);fetchSys();
+  fetchHistory(id);fetchSys();loadNodeRules(id);
   const c=NC.find(n=>n.id===id);if(c)updateDetail(c);
 }
 
@@ -332,8 +336,9 @@ function updateDetail(d){
   $('relayToggle').checked=on;
   $('relayWarnTag').classList.toggle('show',rw);
   $('relayStateBox').classList.toggle('warn',rw);
-  const rm=d.relayMode||0;
-  $('relayMode').textContent=rm===1?'SCHEDULED':'MANUAL';
+  const ruleStatus=d.ruleStatus||{};
+  const srcLabels={manual:'MANUAL',protection:'PROTECTION',schedule:'SCHEDULE',default:'DEFAULT'};
+  $('relayMode').textContent=srcLabels[ruleStatus.relaySource||'manual']||'MANUAL';
 
   if(!d.pending&&pendingCmd[d.id]!==undefined)delete pendingCmd[d.id];
   const pend=d.pending||false;
@@ -357,16 +362,23 @@ function updateDetail(d){
     else{nb.classList.remove('nudged');nb.innerHTML=NUDGE_ICO+' Nudge';}
   }
 
-  const ss=d.schedState||0;
   const si=$('schedInfo');
-  const schedActive=(rm===1&&ss>0&&d.hasSched);
-  const manTab=$('relayTabs').querySelector('[data-mode="manual"]');
-  if(manTab)manTab.classList.toggle('tab-disabled',schedActive);
-  if(schedActive){
-    si.className='sched-info M show';
-    si.innerHTML=`<div><strong>Daily schedule</strong><span class="${SC[ss]||''}">${SL[ss]||''}</span><br>ON: ${d.schedStart||'--:--'} → OFF: ${d.schedEnd||'--:--'}</div><div class="sched-clear" onclick="doClear()">Clear</div>`;
-    setRelayTab('schedule');
-  }else{si.className='sched-info M';}
+  if(si)si.className='sched-info M';
+  // Update rule engine status UI
+  const reBadge=$('ruleEngineBadge');
+  if(reBadge){
+    const cnt=ruleStatus.count||0;
+    reBadge.textContent=cnt+' rule'+(cnt!==1?'s':'');
+    reBadge.className='panel-badge M '+(ruleStatus.engineActive&&cnt>0?'ac':'');
+  }
+  const latchBadge=$('ruleLatchedBadge');
+  if(latchBadge)latchBadge.style.display=ruleStatus.protectionLatched?'':'none';
+  const srcBadge=$('ruleSourceBadge');
+  if(srcBadge){
+    const srcCls={manual:'',protection:'dg',schedule:'ac',default:''};
+    srcBadge.textContent=(ruleStatus.relaySource||'manual').toUpperCase();
+    srcBadge.className='panel-badge M '+(srcCls[ruleStatus.relaySource||'manual']||'');
+  }
 
   const cost=((d.energy||0)/1000)*costRate;
   $('costVal').textContent=cost.toFixed(2);
@@ -1060,6 +1072,72 @@ async function execReboot() {
       } catch(e) {}
     }, 1500);
   }, 2000);
+}
+
+/* -- AutoRule builder -------------------------------------------- */
+const RULE_FIELD_LABELS=['Voltage','Current','Power','Energy','Frequency','Power Factor'];
+const RULE_FIELD_UNITS=['V','A','W','Wh','Hz',''];
+const RULE_OPS=[{v:0,l:'> GT'},{v:1,l:'< LT'},{v:2,l:'≥ GE'},{v:3,l:'≤ LE'}];
+
+function doSetRules(nodeId,rules){wsSend({cmd:'set_rules',node:nodeId,rules});}
+
+function loadNodeRules(id){
+  fetch('/api/node/'+id+'/rules')
+    .then(r=>r.json())
+    .then(data=>{currentRules[id]=data;if(cNid===id)populateRuleBuilder(data);})
+    .catch(()=>{});
+}
+
+function minutesToTime(m){return pad2(Math.floor(m/60))+':'+pad2(m%60);}
+function timeToMinutes(t){const[h,m]=t.split(':').map(Number);return h*60+(m||0);}
+
+function populateRuleBuilder(rules){
+  builderScheds=[];builderProts=[];
+  let defAction='off';
+  (rules||[]).forEach(r=>{
+    if(r.type==='default'){defAction=r.action;}
+    else if(r.type==='schedule'){builderScheds.push({onTime:r.param_a,offTime:r.param_b,action:r.action,enabled:r.enabled!==false});}
+    else if(r.type==='protection'){builderProts.push({field:r.field,op:r.op,threshold:r.param_a,hysteresis:r.param_b,action:r.action,enabled:r.enabled!==false});}
+  });
+  const sel=$('ruleDefaultAction');
+  if(sel)sel.value=(rules&&rules.length)?defAction:'off';
+  renderRuleSchedList();renderRuleProtList();
+}
+
+function renderRuleSchedList(){
+  const el=$('ruleSchedList');if(!el)return;
+  el.innerHTML='';
+  builderScheds.forEach((s,i)=>{
+    const row=document.createElement('div');row.className='rule-row M';
+    row.innerHTML=`<input type="time" class="form-input M" value="${minutesToTime(s.onTime)}" style="flex:1;min-width:0;margin:0" onchange="builderScheds[${i}].onTime=timeToMinutes(this.value)"><span style="color:var(--txd);padding:0 3px">—</span><input type="time" class="form-input M" value="${minutesToTime(s.offTime)}" style="flex:1;min-width:0;margin:0" onchange="builderScheds[${i}].offTime=timeToMinutes(this.value)"><select class="form-input M" style="width:52px;margin:0;padding:4px" onchange="builderScheds[${i}].action=this.value"><option value="on"${s.action==='on'?' selected':''}>ON</option><option value="off"${s.action==='off'?' selected':''}>OFF</option></select><button class="btn btn-ghost M" style="padding:2px 7px;font-size:11px;margin:0" onclick="builderScheds.splice(${i},1);renderRuleSchedList()">×</button>`;
+    el.appendChild(row);
+  });
+}
+
+function renderRuleProtList(){
+  const el=$('ruleProtList');if(!el)return;
+  el.innerHTML='';
+  builderProts.forEach((p,i)=>{
+    const row=document.createElement('div');row.className='rule-row M';
+    const fOpts=RULE_FIELD_LABELS.map((f,fi)=>`<option value="${fi}"${fi===p.field?' selected':''}>${f}</option>`).join('');
+    const oOpts=RULE_OPS.map(o=>`<option value="${o.v}"${o.v===p.op?' selected':''}>${o.l}</option>`).join('');
+    row.innerHTML=`<select class="form-input M" style="flex:1;min-width:0;margin:0;padding:4px" onchange="builderProts[${i}].field=parseInt(this.value)">${fOpts}</select><select class="form-input M" style="width:58px;margin:0;padding:4px" onchange="builderProts[${i}].op=parseInt(this.value)">${oOpts}</select><input type="number" class="thr-input M" value="${p.threshold}" style="width:64px;margin:0" onchange="builderProts[${i}].threshold=parseInt(this.value)||0" placeholder="Thresh"><span style="color:var(--txd);padding:0 3px">→</span><select class="form-input M" style="width:46px;margin:0;padding:4px" onchange="builderProts[${i}].action=this.value"><option value="off"${p.action==='off'?' selected':''}>OFF</option><option value="on"${p.action==='on'?' selected':''}>ON</option></select><button class="btn btn-ghost M" style="padding:2px 7px;font-size:11px;margin:0" onclick="builderProts.splice(${i},1);renderRuleProtList()">×</button>`;
+    el.appendChild(row);
+  });
+}
+
+function ruleAddSched(){builderScheds.push({onTime:480,offTime:1080,action:'on',enabled:true});renderRuleSchedList();}
+function ruleAddProt(){builderProts.push({field:2,op:0,threshold:2000,hysteresis:200,action:'off',enabled:true});renderRuleProtList();}
+
+function doApplyRules(){
+  if(!cNid)return;
+  const rules=[];
+  const defAction=$('ruleDefaultAction').value;
+  rules.push({type:'default',action:defAction,enabled:true});
+  builderScheds.forEach(s=>rules.push({type:'schedule',action:s.action,enabled:s.enabled,onTime:s.onTime,offTime:s.offTime}));
+  builderProts.forEach(p=>rules.push({type:'protection',action:p.action,enabled:p.enabled,field:p.field,op:p.op,threshold:p.threshold,hysteresis:p.hysteresis||0}));
+  if(rules.length>8){alert('Maximum 8 rules total (including default).');return;}
+  doSetRules(cNid,rules);
 }
 
 /* -- Init -------------------------------------------------------- */

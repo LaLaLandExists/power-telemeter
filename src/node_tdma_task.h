@@ -32,13 +32,10 @@ extern bool     g_nodeRegistered;
 extern uint8_t  g_nodeSlotId;
 extern uint16_t g_nodeUID;
 
-// --- Relay / schedule state --------------------------------------------------
+// --- Relay state -------------------------------------------------------------
 extern uint8_t  g_relayState;   // 0=OFF, 1=ON
-extern uint8_t  g_relayMode;    // 0=MANUAL, 1=SCHEDULED
-extern uint8_t  g_schedState;   // 0=NONE, 1=WAITING, 2=ACTIVE
-extern uint8_t  g_schedSH, g_schedSM, g_schedEH, g_schedEM;
 
-// --- Schedule / RTC clock domain ---------------------------------------------
+// --- RTC clock domain --------------------------------------------------------
 // Runs autonomously on millis(); only corrected when delta vs beacon > 2 s.
 extern uint32_t g_rtcBaseSec;    // Seconds-since-midnight base
 extern uint32_t g_rtcBaseMs;     // millis() when rtcBaseSec was set
@@ -48,6 +45,11 @@ extern bool     g_rtcSet;
 inline uint32_t rtcGetSec() {
   if (!g_rtcSet) return 0;
   return (g_rtcBaseSec + (millis() - g_rtcBaseMs) / 1000UL) % 86400UL;
+}
+
+/** Get current RTC time in minutes-since-midnight (0-1439). */
+inline uint16_t rtcGetMinutes() {
+  return (uint16_t)(rtcGetSec() / 60u);
 }
 
 /**

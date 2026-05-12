@@ -29,3 +29,15 @@ bool tdmaQueueCommand(uint8_t slotIdx, const uint8_t* data, uint8_t len);
  * Returns 0xFF if not found.
  */
 uint8_t tdmaFindSlotByNodeId(uint8_t nodeId);
+
+/**
+ * Queue a multi-superframe AutoRule delivery for a node.
+ * Populates RuleDelivery in NodeState; the TDMA task advances it each SF.
+ * Thread-safe — may be called from the web task (Core 0).
+ *
+ * @param slotIdx  0-based slot index
+ * @param rules    Array of AutoRule structs to deliver
+ * @param count    Number of rules (0-8)
+ * @return true if queued, false if slot inactive
+ */
+bool tdmaQueueRules(uint8_t slotIdx, const AutoRule* rules, uint8_t count);

@@ -402,6 +402,14 @@ body::before{
 .sched-badge.waiting{background:rgba(255,159,67,.15);color:var(--wn)}
 .sched-badge.active{background:rgba(0,229,160,.12);color:var(--ac)}
 
+/* -- Rule builder rows ----------------------------------------- */
+.rule-row{
+  display:flex;align-items:center;gap:4px;flex-wrap:nowrap;
+  margin-bottom:4px;
+}
+.rule-row .form-input{padding:3px 4px;font-size:10px}
+.rule-row .thr-input{padding:3px 4px;font-size:10px;height:28px}
+
 /* -- Offline overlay ------------------------------------------- */
 .offline-msg{
   display:none;padding:10px 12px;border-radius:6px;
