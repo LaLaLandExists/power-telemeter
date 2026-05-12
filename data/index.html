@@ -310,6 +310,16 @@
         </div>
       </div>
 
+      <!-- Rule presets manager -->
+      <div class="panel" id="loadoutsPanel">
+        <div class="panel-head">
+          <span class="panel-title">Rule Presets</span>
+        </div>
+        <div class="panel-body">
+          <div id="loadoutManagerList"></div>
+        </div>
+      </div>
+
       <!-- Serial log -->
       <div class="panel" id="panelLog" style="grid-column:1/-1;">
         <div class="panel-head">
@@ -474,6 +484,17 @@
             <span class="panel-badge M" id="ruleEngineBadge">0 rules</span>
           </div>
           <div class="panel-body">
+            <!-- Load-out preset selector -->
+            <div style="margin-bottom:12px">
+              <div style="font-size:10px;color:var(--txd);font-family:'JetBrains Mono',monospace;margin-bottom:4px;font-weight:700">Presets</div>
+              <div style="display:flex;gap:4px;align-items:center">
+                <select class="form-input M" id="loadoutSelect" style="flex:1;min-width:0;margin:0;font-size:11px;padding:4px 6px"></select>
+                <button class="btn btn-ghost M" style="padding:3px 8px;font-size:10px;white-space:nowrap" onclick="loadLoadoutIntoBuilder()">Load</button>
+                <button class="btn btn-primary M" style="padding:3px 8px;font-size:10px;white-space:nowrap" onclick="applyLoadoutDirect()">Apply</button>
+              </div>
+              <div id="loadoutLastApplied" style="font-size:9px;color:var(--txd);font-family:'JetBrains Mono',monospace;margin-top:3px;min-height:12px"></div>
+            </div>
+            <div class="divider" style="margin:0 0 12px"></div>
             <!-- Live rule source status -->
             <div style="display:flex;align-items:center;gap:6px;margin-bottom:8px;flex-wrap:wrap">
               <span style="font-size:10px;color:var(--txd);font-family:'JetBrains Mono',monospace">Source:</span>
@@ -499,10 +520,13 @@
               <div id="ruleProtList"></div>
               <button class="btn btn-ghost M" style="font-size:10px;margin-top:4px;width:100%;padding:4px" onclick="ruleAddProt()">+ Add Limit</button>
             </div>
-            <button class="btn btn-primary M" style="margin-top:12px;font-size:11px;width:100%" onclick="doApplyRules()">
-              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" style="margin-right:4px"><polyline points="20 6 9 17 4 12"/></svg>
-              Apply Rules
-            </button>
+            <div style="display:flex;gap:6px;margin-top:12px">
+              <button class="btn btn-primary M" style="flex:1;font-size:11px" onclick="doApplyRules()">
+                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" style="margin-right:4px"><polyline points="20 6 9 17 4 12"/></svg>
+                Apply Rules
+              </button>
+              <button class="btn btn-ghost M" style="font-size:11px;white-space:nowrap" onclick="saveCurrentAsLoadout()">Save Preset</button>
+            </div>
           </div>
         </div>
 
@@ -558,7 +582,7 @@
 	<br>A project presented in partial fulfillment to the requirements of Microprocessors, Microcontrollers, and DE.
 </footer>
 <script src="/app.js"></script>
-<!--script src="/simulation.js"></script> <!-- Comment out this line to switch to production -->
+<script src="/simulation.js"></script> <!-- Comment out this line to switch to production -->
 <script>
 	init();
 </script>

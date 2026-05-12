@@ -301,6 +301,7 @@ function showDetail(id){
     b.style.background=active?'rgba(0,229,160,.08)':'';
   });
   fetchHistory(id);fetchSys();loadNodeRules(id);
+  renderLoadoutSelector();updateLoadoutStatus();
   const c=NC.find(n=>n.id===id);if(c)updateDetail(c);
 }
 
@@ -1074,6 +1075,84 @@ async function execReboot() {
   }, 2000);
 }
 
+/* -- Rule load-out presets --------------------------------------- */
+const LS_LOADOUTS     = 'pt-loadouts';
+const LS_NODE_LOADOUT = 'pt-node-loadouts';
+
+function getLoadouts(){try{return JSON.parse(localStorage.getItem(LS_LOADOUTS)||'[]');}catch(e){return[];}}
+function saveLoadouts(a){localStorage.setItem(LS_LOADOUTS,JSON.stringify(a));}
+function getNodeLoadoutMap(){try{return JSON.parse(localStorage.getItem(LS_NODE_LOADOUT)||'{}');}catch(e){return {};}}
+function setNodeLoadout(nodeId,name){const m=getNodeLoadoutMap();m[nodeId]={name,at:Date.now()};localStorage.setItem(LS_NODE_LOADOUT,JSON.stringify(m));}
+
+function renderLoadoutSelector(){
+  const sel=$('loadoutSelect');if(!sel)return;
+  const prev=sel.value;
+  const los=getLoadouts();
+  sel.innerHTML='<option value="">— Select preset —</option>';
+  los.forEach(l=>{const o=document.createElement('option');o.value=l.name;o.textContent=l.name+' ('+l.rules.length+' rule'+(l.rules.length!==1?'s':'')+')';sel.appendChild(o);});
+  if(prev&&los.find(l=>l.name===prev))sel.value=prev;
+}
+
+function updateLoadoutStatus(){
+  const el=$('loadoutLastApplied');if(!el||!cNid)return;
+  const entry=getNodeLoadoutMap()[cNid];
+  if(!entry){el.textContent='';return;}
+  const ago=Math.round((Date.now()-entry.at)/1000);
+  const t=ago<60?ago+'s ago':ago<3600?Math.floor(ago/60)+'m ago':Math.floor(ago/3600)+'h ago';
+  el.textContent='Last: "'+entry.name+'" · '+t;
+}
+
+function renderLoadoutManager(){
+  const el=$('loadoutManagerList');if(!el)return;
+  const los=getLoadouts();
+  if(!los.length){
+    el.innerHTML='<div style="text-align:center;padding:14px 0;color:var(--txd);font-size:11px;font-family:\'JetBrains Mono\',monospace;line-height:1.7">No presets saved.<br>Build rules on a node,<br>then press <strong>Save Preset</strong>.</div>';
+    return;
+  }
+  el.innerHTML='';
+  los.forEach(lo=>{
+    const pIcons=[lo.rules.filter(r=>r.type==='protection').length?'⚡':'',lo.rules.filter(r=>r.type==='schedule').length?'⏱':'',lo.rules.filter(r=>r.type==='default').length?'◎':''].filter(Boolean).join(' ');
+    const row=document.createElement('div');row.className='loadout-row';
+    row.innerHTML=`<div style="flex:1;min-width:0"><div class="M" style="font-size:12px;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${esc(lo.name)}</div><div style="font-size:10px;color:var(--txd);font-family:'JetBrains Mono',monospace">${lo.rules.length} rule${lo.rules.length!==1?'s':''} ${pIcons}</div></div><button class="btn btn-ghost M" style="padding:2px 9px;font-size:10px;color:var(--dg);border-color:rgba(255,56,96,.25)" onclick="deleteLoadout(${JSON.stringify(lo.name)})">Delete</button>`;
+    el.appendChild(row);
+  });
+}
+
+function saveCurrentAsLoadout(){
+  const name=prompt('Preset name:','');
+  if(!name||!name.trim())return;
+  const nm=name.trim();
+  const rules=buildRulesFromBuilder();
+  const los=getLoadouts();
+  const idx=los.findIndex(l=>l.name===nm);
+  if(idx>=0){if(!confirm('Overwrite "'+nm+'"?'))return;los[idx]={name:nm,rules,savedAt:Date.now()};}
+  else{los.push({name:nm,rules,savedAt:Date.now()});}
+  saveLoadouts(los);
+  renderLoadoutSelector();renderLoadoutManager();
+  const sel=$('loadoutSelect');if(sel)sel.value=nm;
+}
+
+function deleteLoadout(name){
+  if(!confirm('Delete preset "'+name+'"?'))return;
+  saveLoadouts(getLoadouts().filter(l=>l.name!==name));
+  renderLoadoutSelector();renderLoadoutManager();
+}
+
+function loadLoadoutIntoBuilder(){
+  const sel=$('loadoutSelect');if(!sel||!sel.value)return;
+  const lo=getLoadouts().find(l=>l.name===sel.value);if(!lo)return;
+  populateRuleBuilder(lo.rules);
+}
+
+function applyLoadoutDirect(){
+  const sel=$('loadoutSelect');if(!cNid||!sel||!sel.value)return;
+  const lo=getLoadouts().find(l=>l.name===sel.value);if(!lo)return;
+  if(lo.rules.length>8){alert('Preset exceeds 8 rules.');return;}
+  doSetRules(cNid,lo.rules);
+  setNodeLoadout(cNid,sel.value);
+  updateLoadoutStatus();
+}
+
 /* -- AutoRule builder -------------------------------------------- */
 const RULE_FIELD_LABELS=['Voltage','Current','Power','Energy','Frequency','Power Factor'];
 const RULE_FIELD_UNITS=['V','A','W','Wh','Hz',''];
@@ -1129,15 +1208,23 @@ function renderRuleProtList(){
 function ruleAddSched(){builderScheds.push({onTime:480,offTime:1080,action:'on',enabled:true});renderRuleSchedList();}
 function ruleAddProt(){builderProts.push({field:2,op:0,threshold:2000,hysteresis:200,action:'off',enabled:true});renderRuleProtList();}
 
-function doApplyRules(){
-  if(!cNid)return;
+function buildRulesFromBuilder(){
   const rules=[];
   const defAction=$('ruleDefaultAction').value;
   rules.push({type:'default',action:defAction,enabled:true});
   builderScheds.forEach(s=>rules.push({type:'schedule',action:s.action,enabled:s.enabled,onTime:s.onTime,offTime:s.offTime}));
   builderProts.forEach(p=>rules.push({type:'protection',action:p.action,enabled:p.enabled,field:p.field,op:p.op,threshold:p.threshold,hysteresis:p.hysteresis||0}));
+  return rules;
+}
+
+function doApplyRules(){
+  if(!cNid)return;
+  const rules=buildRulesFromBuilder();
   if(rules.length>8){alert('Maximum 8 rules total (including default).');return;}
   doSetRules(cNid,rules);
+  // If the selected preset was loaded and applied unchanged, record it
+  const sel=$('loadoutSelect');
+  if(sel&&sel.value){setNodeLoadout(cNid,sel.value);updateLoadoutStatus();}
 }
 
 /* -- Init -------------------------------------------------------- */
@@ -1152,5 +1239,6 @@ function init() {
     setInterval(fetchSys,10000);
     fetchSys();
     fetchFeatures();
+    renderLoadoutManager();
   });
 }

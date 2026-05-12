@@ -410,6 +410,15 @@ body::before{
 .rule-row .form-input{padding:3px 4px;font-size:10px}
 .rule-row .thr-input{padding:3px 4px;font-size:10px;height:28px}
 
+/* -- Load-out manager rows ------------------------------------- */
+.loadout-row{
+  display:flex;align-items:center;gap:6px;padding:5px 0;
+  border-bottom:1px solid var(--bd);
+}
+.loadout-row:last-child{border-bottom:none}
+.loadout-row .lo-name{flex:1;font-size:11px;font-family:'JetBrains Mono',monospace;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.loadout-row .lo-count{font-size:9px;color:var(--txd);font-family:'JetBrains Mono',monospace;white-space:nowrap}
+
 /* -- Offline overlay ------------------------------------------- */
 .offline-msg{
   display:none;padding:10px 12px;border-radius:6px;
