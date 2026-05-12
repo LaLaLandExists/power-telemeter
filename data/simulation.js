@@ -6,15 +6,17 @@
 
 /* -- Node profiles -- */
 const SIM_PROFILES = [
-  { id:1, label:'Refrigerator',  nominalPower:120,  idlePower:5,   cyclePeriod:600, cycleOnFrac:0.6,  pf:0.72, pfNoise:0.04, voltNominal:220, freqNominal:60, rssiBase:-58, alarmThreshold:500,  relayState:1, relayMode:0 },
-  { id:2, label:'AC Unit',       nominalPower:1450, idlePower:30,  cyclePeriod:900, cycleOnFrac:0.75, pf:0.82, pfNoise:0.03, voltNominal:220, freqNominal:60, rssiBase:-71, alarmThreshold:2000, relayState:1, relayMode:0 },
-  { id:3, label:'Outdoor Lights', nominalPower:85,   idlePower:0,   cyclePeriod:3600,cycleOnFrac:1.0,  pf:0.95, pfNoise:0.01, voltNominal:220, freqNominal:60, rssiBase:-44, alarmThreshold:200,  relayState:1, relayMode:0 },
-  { id:4, label:'PC',   nominalPower:320,  idlePower:95,  cyclePeriod:120, cycleOnFrac:0.55, pf:0.88, pfNoise:0.05, voltNominal:220, freqNominal:60, rssiBase:-65, alarmThreshold:600,  relayState:1, relayMode:0 },
-  { id:5, label:'Heater',  nominalPower:2000, idlePower:0,   cyclePeriod:600, cycleOnFrac:0.5,  pf:0.99, pfNoise:0.01, voltNominal:220, freqNominal:60, rssiBase:-88, alarmThreshold:3000, relayState:0, relayMode:0, _permanentlyOffline:true },
+  { id:1, label:'Refrigerator',   nominalPower:120,  idlePower:5,   cyclePeriod:600,  cycleOnFrac:0.6,  pf:0.72, pfNoise:0.04, voltNominal:220, freqNominal:60, rssiBase:-58, alarmThreshold:500,  relayState:1 },
+  { id:2, label:'AC Unit',        nominalPower:1450, idlePower:30,  cyclePeriod:900,  cycleOnFrac:0.75, pf:0.82, pfNoise:0.03, voltNominal:220, freqNominal:60, rssiBase:-71, alarmThreshold:2000, relayState:1 },
+  { id:3, label:'Outdoor Lights', nominalPower:85,   idlePower:0,   cyclePeriod:3600, cycleOnFrac:1.0,  pf:0.95, pfNoise:0.01, voltNominal:220, freqNominal:60, rssiBase:-44, alarmThreshold:200,  relayState:1 },
+  { id:4, label:'PC',             nominalPower:320,  idlePower:95,  cyclePeriod:120,  cycleOnFrac:0.55, pf:0.88, pfNoise:0.05, voltNominal:220, freqNominal:60, rssiBase:-65, alarmThreshold:600,  relayState:1 },
+  { id:5, label:'Heater',         nominalPower:2000, idlePower:0,   cyclePeriod:600,  cycleOnFrac:0.5,  pf:0.99, pfNoise:0.01, voltNominal:220, freqNominal:60, rssiBase:-88, alarmThreshold:3000, relayState:0, _permanentlyOffline:true },
 ];
 
 const SIM_TICK_MS  = 3000;
 const SIM_HIST_LEN = 120;
+
+const SIM_RULE_STATUS_DEFAULT = {count:0, engineActive:false, protectionLatched:false, relaySource:'manual', deliveryActive:false};
 
 const simState = SIM_PROFILES.map(p => ({
   ...p,
@@ -22,10 +24,7 @@ const simState = SIM_PROFILES.map(p => ({
   energy:       Math.random() * 800 + 50,
   age:          0,
   pending:      false,
-  hasSched:     false,
-  schedStart:   '08:00',
-  schedEnd:     '17:00',
-  schedState:   0,
+  ruleStatus:   {...SIM_RULE_STATUS_DEFAULT},
   _t:           Math.random() * p.cyclePeriod,
   _offlineTimer:0,
   _offlineIn:   p._permanentlyOffline ? Infinity : randomOfflineDelay(),
@@ -111,9 +110,9 @@ function nodeSnapshot(s){
   return {id:s.id,label:s.label,online:s.online,rssi:s.online?Math.round(s.rssiBase+noise(6)):s.rssiBase,
     voltage:s.voltage||s.voltNominal,current:s.current||0,power:s.power||0,
     energy:parseFloat((s.energy||0).toFixed(1)),frequency:s.frequency||s.freqNominal,
-    powerFactor:s.powerFactor||s.pf,relayState:s.relayState,relayMode:s.relayMode,
-    schedState:s.schedState,alarmState:s.alarmState||0,age:s.age||0,pending:s.pending||false,
-    hasSched:s.hasSched,schedStart:s.schedStart,schedEnd:s.schedEnd};
+    powerFactor:s.powerFactor||s.pf,relayState:s.relayState,
+    alarmState:s.alarmState||0,age:s.age||0,pending:s.pending||false,
+    ruleStatus:s.ruleStatus||{...SIM_RULE_STATUS_DEFAULT}};
 }
 
 connectWS = function(){
@@ -133,35 +132,75 @@ wsSend = function(cmd){
     case 'relay_manual':{
       const s=simState.find(x=>x.id===cmd.node); if(!s)break;
       s.pending=true; renderGrid(NC);
-      setTimeout(()=>{ s.relayState=cmd.state; s.relayMode=0; s.pending=false;
+      setTimeout(()=>{
+        s.relayState=cmd.state;
+        s.ruleStatus={...SIM_RULE_STATUS_DEFAULT, relaySource:'manual'};
+        s.pending=false;
         if(cNid===cmd.node){$('commitBanner').classList.remove('show');updateDetail(nodeSnapshot(s));}
-        renderGrid(NC); }, 600+Math.random()*400); break;
+        renderGrid(NC);
+      }, 600+Math.random()*400); break;
     }
     case 'relay_schedule':{
+      // Legacy schedule command — simulated as a 2-rule delivery (DEFAULT OFF + SCHEDULE)
       const s=simState.find(x=>x.id===cmd.node); if(!s)break;
       s.pending=true;
       setTimeout(()=>{
-        s.relayMode=1; s.hasSched=true;
-        s.schedStart=pad2(cmd.startH)+':'+pad2(cmd.startM);
-        s.schedEnd=pad2(cmd.endH)+':'+pad2(cmd.endM);
         const now=new Date(); const nm=now.getHours()*60+now.getMinutes();
         const on=cmd.startH*60+cmd.startM; const off=cmd.endH*60+cmd.endM;
         const inW=on<off?(nm>=on&&nm<off):(nm>=on||nm<off);
-        s.schedState=inW?2:1; s.relayState=inW?1:0; s.pending=false;
-        if(cNid===cmd.node){$('commitBannerSched').classList.remove('show');updateDetail(nodeSnapshot(s));}
+        s.relayState=inW?1:0;
+        s.ruleStatus={count:2,engineActive:true,protectionLatched:false,relaySource:inW?'schedule':'default',deliveryActive:false};
+        s.pending=false;
+        if(cNid===cmd.node){$('commitBanner').classList.remove('show');updateDetail(nodeSnapshot(s));}
+        renderGrid(NC);
       },700+Math.random()*300); break;
     }
     case 'relay_clear':{
       const s=simState.find(x=>x.id===cmd.node); if(!s)break;
       s.pending=true;
-      setTimeout(()=>{ s.relayMode=0; s.hasSched=false; s.schedState=0; s.pending=false;
-        if(cNid===cmd.node){$('commitBannerSched').classList.remove('show');updateDetail(nodeSnapshot(s));} },500); break;
+      setTimeout(()=>{
+        s.ruleStatus={...SIM_RULE_STATUS_DEFAULT};
+        s.pending=false;
+        if(cNid===cmd.node){$('commitBanner').classList.remove('show');updateDetail(nodeSnapshot(s));}
+        renderGrid(NC);
+      },500); break;
+    }
+    case 'set_rules':{
+      const s=simState.find(x=>x.id===cmd.node); if(!s)break;
+      s.pending=true;
+      const rules=cmd.rules||[];
+      const count=rules.filter(r=>r.enabled!==false).length;
+      // One superframe per delivery step (CLEAR + N rules + COMMIT)
+      const delay=Math.max(1,count+2)*SIM_TICK_MS;
+      setTimeout(()=>{
+        const now=new Date(); const nm=now.getHours()*60+now.getMinutes();
+        const schedRule=rules.find(r=>r.type==='schedule'&&r.enabled!==false);
+        let source='default';
+        if(!count){ source='manual'; }
+        else if(schedRule){
+          const inW=schedRule.onTime<schedRule.offTime
+            ?(nm>=schedRule.onTime&&nm<schedRule.offTime)
+            :(nm>=schedRule.onTime||nm<schedRule.offTime);
+          source=inW?'schedule':'default';
+        }
+        s.ruleStatus={count,engineActive:count>0,protectionLatched:false,relaySource:source,deliveryActive:false};
+        s.pending=false;
+        currentRules[cmd.node]=rules;
+        if(cNid===cmd.node){
+          $('commitBanner').classList.remove('show');
+          updateDetail(nodeSnapshot(s));
+          populateRuleBuilder(rules);
+        }
+        renderGrid(NC);
+        onMsg({type:'rules_queued',node:cmd.node,success:true});
+      },delay); break;
     }
     case 'set_threshold':{
       const s=simState.find(x=>x.id===cmd.node); if(!s)break;
-      setTimeout(()=>{ s.alarmThreshold=cmd.watts;
-        $('thrBanner').classList.remove('show'); $('thrCtrl').classList.remove('frozen');
-        if(cNid===cmd.node)updateDetail(nodeSnapshot(s)); },400); break;
+      setTimeout(()=>{
+        s.alarmThreshold=cmd.watts;
+        if(cNid===cmd.node)updateDetail(nodeSnapshot(s));
+      },400); break;
     }
     case 'clear_energy':{
       const s=simState.find(x=>x.id===cmd.node); if(s){s.energy=0;} break;
@@ -198,6 +237,12 @@ fetchSys = async function(){
   gwTimeSet=true; updGwTime();
   updNetPanel({ wifiMode:'sta', ssid:simSSID, wifiRSSI:simRSSI, ip:'192.168.1.42' });
 }
+
+loadNodeRules = function(id){
+  const s=simState.find(x=>x.id===id);
+  const rules=currentRules[id]||[];
+  if(cNid===id)populateRuleBuilder(rules);
+};
 
 doSyncTime = function(){
   gwTimeSet=true;
