@@ -364,7 +364,7 @@ function updateDetail(d){
     else{nb.classList.remove('nudged');nb.innerHTML=NUDGE_ICO+' Nudge';}
   }
 
-  // Lock manual toggle when auto mode is active
+  // Lock manual controls and tab when auto mode is active
   const relayToggle=$('relayToggle');
   if(relayToggle){
     relayToggle.disabled=autoActive||off||pend;
@@ -372,6 +372,17 @@ function updateDetail(d){
   }
   const manualHint=$('manualAutoHint');
   if(manualHint)manualHint.style.display=autoActive?'block':'none';
+  // Grey out the entire Manual pane when auto is running
+  const tabManualEl=$('tabManual');
+  if(tabManualEl)tabManualEl.classList.toggle('frozen',autoActive);
+  // Dim the Manual tab header so it's obvious it can't be used
+  document.querySelectorAll('#relayTabs div[data-mode="manual"]').forEach(t=>{
+    t.classList.toggle('tab-disabled',autoActive);
+  });
+  // If auto just became active while user is on the Manual tab, push them to Auto
+  if(autoActive&&tabManualEl&&tabManualEl.classList.contains('active')){
+    setRelayTab('auto');
+  }
 
   // Update auto tab button
   const autoEnBtn=$('autoEnableBtn'),autoDsBtn=$('autoDisableBtn'),autoNoRules=$('autoNoRulesHint');
@@ -1218,7 +1229,7 @@ function renderRuleSchedList(){
         `<option value="on"${s.action==='on'?' selected':''}>ON</option>`+
         `<option value="off"${s.action==='off'?' selected':''}>OFF</option>`+
       `</select>`+
-      `<button style="padding:2px 8px;font-size:12px;flex-shrink:0;background:var(--sf2);border:1px solid var(--bd);border-radius:5px;cursor:pointer;color:var(--txd)" onclick="builderScheds.splice(${i},1);renderRuleSchedList()">×</button>`;
+      `<button style="padding:2px 8px;font-size:12px;flex-shrink:0;background:rgba(255,56,96,.08);border:1px solid rgba(255,56,96,.25);border-radius:5px;cursor:pointer;color:var(--dg)" onclick="builderScheds.splice(${i},1);renderRuleSchedList()">×</button>`;
     el.appendChild(row);
   });
 }
@@ -1236,7 +1247,7 @@ function renderRuleProtList(){
       `<input type="number" class="thr-input M" value="${p.threshold}" style="width:60px;flex-shrink:0;margin:0" oninput="builderProts[${i}].threshold=parseInt(this.value)||0" placeholder="Thr">`+
       `<span style="color:var(--txd);padding:0 2px;flex-shrink:0">→</span>`+
       `<select class="form-input M" style="width:46px;flex-shrink:0;margin:0;padding:4px" onchange="builderProts[${i}].action=this.value"><option value="off"${p.action==='off'?' selected':''}>OFF</option><option value="on"${p.action==='on'?' selected':''}>ON</option></select>`+
-      `<button style="padding:2px 8px;font-size:12px;flex-shrink:0;background:var(--sf2);border:1px solid var(--bd);border-radius:5px;cursor:pointer;color:var(--txd)" onclick="builderProts.splice(${i},1);renderRuleProtList()">×</button>`;
+      `<button style="padding:2px 8px;font-size:12px;flex-shrink:0;background:rgba(255,56,96,.08);border:1px solid rgba(255,56,96,.25);border-radius:5px;cursor:pointer;color:var(--dg)" onclick="builderProts.splice(${i},1);renderRuleProtList()">×</button>`;
     el.appendChild(row);
   });
 }
