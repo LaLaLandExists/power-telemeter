@@ -1130,7 +1130,7 @@ function renderLoadoutManager(){
   los.forEach(lo=>{
     const pIcons=[lo.rules.filter(r=>r.type==='protection').length?'⚡':'',lo.rules.filter(r=>r.type==='schedule').length?'⏱':'',lo.rules.filter(r=>r.type==='default').length?'◎':''].filter(Boolean).join(' ');
     const row=document.createElement('div');row.className='loadout-row';
-    row.innerHTML=`<div style="flex:1;min-width:0"><div class="M" style="font-size:12px;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${esc(lo.name)}</div><div style="font-size:10px;color:var(--txd);font-family:'JetBrains Mono',monospace">${lo.rules.length} rule${lo.rules.length!==1?'s':''} ${pIcons}</div></div><button class="btn btn-ghost M" style="padding:2px 9px;font-size:10px;color:var(--dg);border-color:rgba(255,56,96,.25)" onclick="deleteLoadout(${JSON.stringify(lo.name)})">Delete</button>`;
+    row.innerHTML=`<div style="flex:1;min-width:0"><div class="M" style="font-size:12px;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${esc(lo.name)}</div><div style="font-size:10px;color:var(--txd);font-family:'JetBrains Mono',monospace">${lo.rules.length} rule${lo.rules.length!==1?'s':''} ${pIcons}</div></div><button style="padding:2px 9px;font-size:10px;flex-shrink:0;background:rgba(255,56,96,.08);border:1px solid rgba(255,56,96,.25);border-radius:5px;cursor:pointer;color:var(--dg);font-family:'JetBrains Mono',monospace" onclick="deleteLoadout(${JSON.stringify(lo.name)})">Delete</button>`;
     el.appendChild(row);
   });
 }
