@@ -14,7 +14,7 @@ def gzip_data_files(source, target, env):
             os.remove(gz_path)
             print(f"  del   {fname}  (source removed)")
 
-    # Compress source files that are newer than their .gz counterpart.
+    # Always recompress — avoids serving stale .gz on uploadfs.
     for fname in sorted(os.listdir(data_dir)):
         if fname.endswith(".gz"):
             continue
@@ -22,9 +22,6 @@ def gzip_data_files(source, target, env):
         if not os.path.isfile(src):
             continue
         dst = src + ".gz"
-        if os.path.isfile(dst) and os.path.getmtime(dst) >= os.path.getmtime(src):
-            print(f"  skip  {fname:30s}  (up to date)")
-            continue
         with open(src, "rb") as f_in, gzip.open(dst, "wb", compresslevel=9) as f_out:
             shutil.copyfileobj(f_in, f_out)
         src_kb = os.path.getsize(src) / 1024

@@ -166,9 +166,18 @@ body::before{
 .node-card:hover::after{transform:scaleY(1)}
 .node-card.alarm{border-color:var(--dg)!important}
 .node-card.alarm::before{background:var(--dg)!important;opacity:1}
-.node-card.alarm:hover{border-color:var(--dg)!important;transform:translateY(-2px);box-shadow:0 8px 32px var(--card-hover)}
+.node-card.alarm:hover{border-color:var(--dg)!important;transform:translateY(-2px);box-shadow:0 8px 32px rgba(255,56,96,.08)}
 .node-card.alarm:hover::before{opacity:1}
 .node-card.alarm:hover::after{transform:scaleY(1)}
+.node-card.relay-warn{border-color:var(--wn)!important}
+.node-card.relay-warn::before{background:var(--wn)!important;opacity:1}
+.node-card.relay-warn:hover{border-color:var(--wn)!important;transform:translateY(-2px);box-shadow:0 8px 32px rgba(255,159,67,.08)}
+.node-card.relay-warn:hover::before{opacity:1}
+.node-card.relay-warn:hover::after{transform:scaleY(1)}
+.node-card.offline::before{opacity:0!important}
+.node-card.offline:hover{border-color:var(--bd)}
+.node-card.offline:hover::after{transform:scaleY(0)}
+.node-card.offline:hover .nc-arrow{color:var(--txd)}
 
 .nc-head{
   padding:16px 16px 12px;
@@ -200,6 +209,7 @@ body::before{
 .nc-relay{font-size:10px;font-weight:600;font-family:'JetBrains Mono',monospace}
 .nc-relay.on{color:var(--ac)}
 .nc-relay.off{color:var(--dg)}
+.nc-relay.warn{color:var(--wn)!important}
 .nc-arrow{color:var(--txd);transition:color .2s;display:flex;align-items:center}
 .node-card:hover .nc-arrow{color:var(--ac)}
 .node-card.alarm:hover .nc-arrow{color:var(--dg) !important}
@@ -342,26 +352,31 @@ body::before{
   display:flex;align-items:center;justify-content:space-between;
   padding:10px 12px;border-radius:8px;
   background:var(--sf2);border:1px solid var(--bd);
-  margin-bottom:12px;
-  transition:background .3s,border .3s;
+  margin-bottom:6px;
+  transition:background .3s,border-color .3s;
 }
+.relay-state-box.warn{border-color:var(--wn)!important}
 .relay-state-lbl{font-size:10px;color:var(--txd);text-transform:uppercase;letter-spacing:1px;margin-bottom:3px}
 .relay-state-val{font-size:20px;font-weight:700;font-family:'JetBrains Mono',monospace}
 .relay-state-val.on{color:var(--ac)}
 .relay-state-val.off{color:var(--dg)}
 .relay-mode-lbl{font-size:10px;color:var(--txd);font-family:'JetBrains Mono',monospace}
 
-/* -- Commit / pending banner ----------------------------------- */
+/* -- Commit / pending notification bar ------------------------- */
 .commit-banner{
-  display:none;padding:4px 10px;border-radius:5px;
-  background:rgba(255,159,67,.15);color:var(--wn);
-  border:1px solid rgba(255,159,67,.3);
-  font-size:10px;font-weight:600;margin-top:10px;
-  animation:pu 1.2s infinite;
+  position:absolute;top:100%;left:0;right:0;
+  display:flex;align-items:center;justify-content:center;gap:6px;
+  padding:7px 24px;
+  background:color-mix(in srgb,var(--bg) 88%,rgba(255,159,67,1));
+  backdrop-filter:blur(8px);
+  border-bottom:1px solid rgba(255,159,67,.3);
+  color:var(--wn);font-size:11px;font-weight:600;
   font-family:'JetBrains Mono',monospace;
-  align-items:center;gap:6px;
+  opacity:0;visibility:hidden;transform:translateY(-4px);
+  transition:opacity .2s,visibility .2s,transform .2s;
+  pointer-events:none;
 }
-.commit-banner.show{display:inline-flex}
+.commit-banner.show{opacity:1;visibility:visible;transform:translateY(0);pointer-events:auto;}
 
 /* -- Schedule active info box ---------------------------------- */
 .sched-info{
@@ -437,7 +452,14 @@ body::before{
   background:rgba(255,56,96,.12);font-size:10px;font-weight:600;
   color:var(--dg);font-family:'JetBrains Mono',monospace;
 }
-.alarm-tag.show{display:inline-block}
+.alarm-tag.show{display:inline-flex;align-items:center}
+.relay-warn-tag{
+  display:none;margin-bottom:12px;padding:5px 10px;border-radius:6px;
+  background:rgba(255,159,67,.12);font-size:10px;font-weight:600;
+  color:var(--wn);font-family:'JetBrains Mono',monospace;
+  border:1px solid rgba(255,159,67,.25);
+}
+.relay-warn-tag.show{display:flex;align-items:center;gap:5px}
 
 /* -- Detail header --------------------------------------------- */
 .det-hdr{

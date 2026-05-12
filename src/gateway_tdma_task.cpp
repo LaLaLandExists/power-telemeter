@@ -3,11 +3,11 @@
  *
  * Core TDMA engine for the gateway.
  *
- * Superframe structure (~1840 ms total):
- *   [Beacon 40 ms] [Slot-1..8 each 210 ms] [Contention UL 60 ms + DL 40 ms] [Guard 20 ms]
+ * Superframe structure (~3000 ms total):
+ *   [Beacon 40 ms] [Slot-1..8 each 165 ms] [Contention UL 60 ms + DL 40 ms] [Idle 1520 ms] [Guard 20 ms]
  *
- * Each slot pair:
- *   [UL RX window 80 ms] [DL TX window 80 ms] [Guard 50 ms]
+ * Each slot pair (DL-first):
+ *   [DL TX 50 ms] [UL RX 100 ms] [Guard 15 ms]
  *   Channel = hopChannel(sfCount, slotId)
  *   Phase guard (500 µs) applied between pairs where channel changes.
  *
@@ -128,10 +128,10 @@ static void processUplink(uint8_t slotIdx, const TelemetryPacket& pkt, int16_t r
 
   NodeState* ns = &g_nodes[slotIdx];
 
-  // Ghost-node detection: DL-first design handles eviction via the NoopPacket
-  // UID check.  An unexpected UL UID is a secondary indicator (the ghost has
-  // already received a DL with the wrong UID and should be re-contending).
-  // Log the event but do not mutate node state; the DL path is authoritative.
+  // Epoch-driven registration: a registered node whose s_joinEpoch matches the
+  // current epoch holds a valid slot assignment, so UL UID should always agree.
+  // Log a mismatch as a diagnostic but do not mutate state; the node will see the
+  // epoch change in the next beacon and re-contend on its own.
   if (pkt.uid != ns->deviceUID) {
     logAsync("[GW-UL] Slot%d UID mismatch (rx=0x%04X exp=0x%04X) - ignoring UL\n",
              slotIdx + 1, pkt.uid, ns->deviceUID);
@@ -167,10 +167,10 @@ static void processUplink(uint8_t slotIdx, const TelemetryPacket& pkt, int16_t r
     } else if (ns->queuedCmd.len >= 2 && ns->queuedCmd.data[0] == PKT_RELAY_CLEAR) {
       confirmed = (ns->relayMode == 0 && ns->schedState == 0);
     } else {
-      // Threshold, nudge - no confirmation from telemetry, rely on timeout
-      if ((millis() - ns->pendingSentAt) >= PENDING_TIMEOUT_MS) {
-        ns->pending = false;
-      }
+      // Nudge and threshold have nothing to echo in the status byte.
+      // The DL was already transmitted; receiving any UL means the node
+      // processed its slot and applied the command — clear immediately.
+      confirmed = true;
     }
     if (confirmed) ns->pending = false;
   }
@@ -223,93 +223,63 @@ static void sendBeacon() {
 }
 
 // -----------------------------------------------------------------------------
-// Downlink TX — always called for every occupied slot.
-//
-// If a command is queued the packet is built as:
-//   [pktType | nodeId | uid_lo | uid_hi | payload...]
-// (PendingCmd stores the old-format {pktType, nodeId, payload...}; the UID is
-// injected here at bytes 2-3 from g_nodes[slotIdx].deviceUID.)
-//
-// If no command is queued a NoopPacket (DlHeader only, PKT_NOOP) is sent.
-// The UID in every DL lets a ghost node self-evict: it compares the received
-// uid against g_nodeUID and re-contends on mismatch without gateway intervention.
+// Downlink TX — called for every occupied slot; skips TX when no command is
+// queued.  The caller's waitUntilMs(slotBase + SLOT_DL_MS) preserves UL timing
+// regardless.  PendingCmd.data stores {pktType, nodeId, payload...} which now
+// matches the wire format directly (no UID injection needed).
 //
 // Must be called with g_nodesMutex held.
 // -----------------------------------------------------------------------------
 static void sendDownlink(uint8_t slotIdx) {
   NodeState* ns = &g_nodes[slotIdx];
+  if (!ns->queuedCmd.active || ns->queuedCmd.len < 2) return;
 
-  uint8_t txBuf[12];
+  uint8_t txBuf[MAX_DL_PAYLOAD_LEN];
   memset(txBuf, 0, MAX_DL_PAYLOAD_LEN);
-  uint8_t txLen;
-  bool    hasCmd = ns->queuedCmd.active && ns->queuedCmd.len >= 2;
-
-  if (hasCmd) {
-    // Reshape from old-format {pktType, nodeId, payload...}
-    //                  to new {pktType, nodeId, uid_lo, uid_hi, payload...}
-    uint8_t payloadLen = ns->queuedCmd.len - 2;
-    txBuf[0] = ns->queuedCmd.data[0];
-    txBuf[1] = ns->slotId;
-    txBuf[2] = (uint8_t)(ns->deviceUID & 0xFF);
-    txBuf[3] = (uint8_t)(ns->deviceUID >> 8);
-    if (payloadLen > 0) {
-      memcpy(txBuf + 4, ns->queuedCmd.data + 2, payloadLen);
-    }
-    txLen = 4 + payloadLen;
-  } else {
-    txBuf[0] = PKT_NOOP;
-    txBuf[1] = ns->slotId;
-    txBuf[2] = (uint8_t)(ns->deviceUID & 0xFF);
-    txBuf[3] = (uint8_t)(ns->deviceUID >> 8);
-    txLen = 4;
-  }
+  memcpy(txBuf, ns->queuedCmd.data, ns->queuedCmd.len);
 
   pktEncrypt(txBuf, MAX_DL_PAYLOAD_LEN, g_sfCount, (uint8_t)(slotIdx + 1), PKT_DIR_DL);
   int16_t st = radio.transmit(txBuf, MAX_DL_PAYLOAD_LEN);
-  bool ok = (st == RADIOLIB_ERR_NONE);
-
-  if (ok && hasCmd) {
+  if (st == RADIOLIB_ERR_NONE) {
     ns->pendingSentAt    = millis();
     ns->queuedCmd.active = false;
-    logAsync("[GW-DL] Slot%d type=0x%02X len=%d\n", slotIdx + 1, txBuf[0], txLen);
-  } else if (!ok) {
+    logAsync("[GW-DL] Slot%d type=0x%02X\n", slotIdx + 1, txBuf[0]);
+  } else {
     logAsync("[GW-DL] TX error %d slot%d\n", st, slotIdx + 1);
   }
 }
 
 // -----------------------------------------------------------------------------
-// Evict nodes that have missed NODE_TIMEOUT_SFS consecutive superframes.
-// Called once per superframe from the tail end of gatewayTdmaTask(), after all
-// radio windows are closed and before the next sfStart.
-// missedSfs is incremented in the slot loop only when no valid UL arrived for
-// that slot; processUplink() resets it to 0 on a successful UL.  Active nodes
-// (UL every SF) always have missedSfs == 0 entering this function.
+// Evict stale nodes — runs only when all slots are occupied (g_slotMask == 0xFF).
+// When free slots exist there is no eviction pressure; stale nodes keep their
+// slot so they can rejoin without re-contending if they come back.
+// When the network is full, any node that has exceeded NODE_TIMEOUT_SFS
+// consecutive missed superframes is evicted to open a slot for the next join.
+// Active nodes (UL every SF) always have missedSfs == 0.
 // -----------------------------------------------------------------------------
 static void evictStaleNodes() {
-  bool evicted = false;
+  if (g_slotMask != 0xFF) return;  // free slots exist — nothing to reclaim
 
   if (xSemaphoreTake(g_nodesMutex, pdMS_TO_TICKS(5)) != pdTRUE) return;
 
+  bool anyEvicted = false;
   for (uint8_t i = 0; i < MAX_NODES; i++) {
     NodeState* ns = &g_nodes[i];
     if (!ns->active) continue;
     if (ns->missedSfs < NODE_TIMEOUT_SFS) continue;
 
-    logAsync("[GW-TDMA] Slot %d UID=0x%04X evicted (%d missed superframes)\n",
+    logAsync("[GW-TDMA] Slot %d UID=0x%04X evicted (%d missed SFs)\n",
              ns->slotId, ns->deviceUID, ns->missedSfs);
 
-    framQueueSave(i, true, true);   // flush any dirty energy/history before clearing
+    framQueueSave(i, true, true);
     ns->active    = false;
     ns->hasData   = false;
     ns->missedSfs = 0;
-    g_slotMask &= ~(1u << i);
-    evicted = true;
+    ns->label[0]  = '\0';  // clear so next joiner doesn't inherit a stale label
+    g_slotMask   &= ~(1u << i);
+    anyEvicted = true;
   }
-
-  // No epoch bump here: ghost nodes that return after slot reassignment are
-  // handled by the DL-first UID check (NoopPacket carries the owner UID every
-  // superframe).  Epoch changes only on gateway boot (random seed, reboot case).
-  (void)evicted;
+  if (anyEvicted) g_networkEpoch++;  // one increment signals all re-contention needed
 
   xSemaphoreGive(g_nodesMutex);
 }
@@ -429,8 +399,7 @@ static void gatewayTdmaTask(void* /*params*/) {
       setChannel(ch);
 
       // -- DL transmit window (first) --------------------------------
-      // Always send: NoopPacket when idle, or the queued command.
-      // The UID embedded in every DL lets a ghost node self-evict on mismatch.
+      // Transmit only when a command is queued; idle slots skip TX entirely.
       radio.standby();
       vTaskDelay(pdMS_TO_TICKS(5));
       if (xSemaphoreTake(g_nodesMutex, pdMS_TO_TICKS(10)) == pdTRUE) {
@@ -475,10 +444,14 @@ static void gatewayTdmaTask(void* /*params*/) {
     // -- Zone 3: Contention window ----------------------------------------
     handleContentionWindow(sfStart);
 
-    // -- Zone 4: End guard + eviction ------------------------------------
-    uint32_t sfEnd = sfStart + SUPERFRAME_MS;
-    waitUntilMs(sfEnd);
-    evictStaleNodes();  // tail-end: no radio windows open, next beacon resyncs
+    // -- Zone 4: Idle window + end guard ---------------------------------
+    // Radio is silent; run maintenance before blocking on sfEnd.
+    evictStaleNodes();
+    if (g_sfCount % 10 == 0) {
+      logAsync("[GW-TDMA] idle ~%ld ms\n",
+               (long)(sfStart + SUPERFRAME_MS - END_GUARD_MS) - (long)millis());
+    }
+    waitUntilMs(sfStart + SUPERFRAME_MS);
   }
 }
 

@@ -81,7 +81,7 @@ extern NodeState         g_nodes[MAX_NODES];
 extern SemaphoreHandle_t g_nodesMutex;
 extern uint16_t          g_sfCount;
 extern uint8_t           g_slotMask;
-extern uint8_t           g_networkEpoch;  // incremented on every join; sent in BeaconPacket.epoch
+extern uint8_t           g_networkEpoch;  // incremented on every node eviction; sent in BeaconPacket.epoch
 
 // Gateway clock (no NTP — set via /api/time or WebSocket set_time)
 extern uint8_t           g_gwHour;

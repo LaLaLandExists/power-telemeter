@@ -30,14 +30,14 @@ The SX1278 transceiver implements the LoRa chirp-spread-spectrum (CSS) physical 
 |-----------------|-----------------|
 | Frequency       | 433 MHz ISM band |
 | Bandwidth       | 125 kHz         |
-| Spreading Factor | SF7            |
+| Spreading Factor | SF6            |
 | Coding Rate     | 4/5             |
-| TX Power        | 17 dBm          |
+| TX Power        | 10 dBm          |
 | Sync Word       | 0x12 (private)  |
 
-SF7 at 125 kHz yields a bit rate of approximately 5.47 kbps, a time-on-air of roughly 20 ms for the largest packet (30 bytes), and a link budget of approximately 134 dB — adequate for intra-building and short outdoor ranges of 200–500 m [3]. SF7 is deliberately chosen over higher spreading factors because it minimises time-on-air per slot, which is the primary constraint in a TDMA budget.
+SF6 at 125 kHz yields a symbol duration of 0.512 ms and represents the highest data rate available on the SX1278. The 8-byte BeaconPacket has a time-on-air of approximately 18 ms; the 32-byte TelemetryPacket approximately 34 ms. The link budget at 10 dBm output and SX1278 sensitivity of approximately −118 dBm at SF6 is around 126 dB, sufficient for intra-building ranges of 100–300 m. SF6 is chosen over higher spreading factors because minimising time-on-air per slot is the primary constraint in a tight TDMA budget; the deployment environment does not require the extended range that higher SFs provide.
 
-Augustin et al. [3] characterised LoRa coverage and capacity under various SF/BW combinations and concluded that SF7 provides the best throughput-per-channel efficiency in dense, short-range deployments — matching the intent of this system.
+Augustin et al. [3] characterised LoRa coverage and capacity under various SF/BW combinations and concluded that the lowest viable SF provides the best throughput-per-channel efficiency in dense, short-range deployments — matching the intent of this system.
 
 ### 3.2 Frequency-Hopping Channel Plan
 
@@ -55,20 +55,24 @@ The multiplier 7 is coprime to 8, guaranteeing that over eight consecutive super
 
 ### 4.1 Superframe Structure
 
-The protocol organises time into repeating superframes of approximately 1845 ms:
+The protocol organises time into repeating superframes of exactly 3000 ms:
 
 ```
-|<——————————————————— ~1845 ms ———————————————————>|
-| Beacon | Slot 1 | Slot 2 | … | Slot 8 | CW  | Guard |
-|  40 ms | 210 ms | 210 ms |   | 210 ms | 100 ms | 20 ms |
+|<————————————————————————————— 3000 ms ——————————————————————————————>|
+| Beacon | Slot 1 | Slot 2 | … | Slot 8 | CW UL | CW DL | Idle   | Guard |
+|  40 ms | 165 ms | 165 ms |   | 165 ms | 60 ms | 40 ms | 1520 ms| 20 ms |
 ```
 
-Each 210 ms data slot contains:
-- **UL window (80 ms):** Node transmits a 30-byte TelemetryPacket; gateway receives.
-- **DL window (80 ms):** Gateway transmits a pending command (if any); node receives.
-- **Guard (50 ms):** Absorbs clock drift and PLL re-lock latency between frequency hops.
+Each 165 ms data slot uses **DL-first ordering**:
+- **DL window (50 ms):** Gateway transmits a pending command (if any); node receives.
+- **UL window (100 ms):** Node transmits a 32-byte TelemetryPacket; gateway receives.
+- **Guard (15 ms):** Absorbs PLL re-lock latency between frequency hops.
 
-TDMA is the canonical choice for deterministic WSN MAC protocols where latency bounds and collision-free delivery are required [5]. Unlike CSMA-CA, TDMA eliminates hidden-node problems and provides bounded worst-case latency, which is O(1) in the number of nodes — an uplink delay of at most one superframe (~1.845 s) regardless of network load. Demirkol et al. [5] survey the trade-offs of MAC protocols for WSNs and identify TDMA as superior for periodic telemetry applications with a known node count.
+The DL-first ordering allows the node to receive and act on a relay command in the same slot before transmitting the uplink telemetry that confirms the new state. The wide 100 ms UL window — relative to the ~34 ms TelemetryPacket airtime — absorbs beacon-arrival latency and FreeRTOS scheduling jitter without requiring sub-millisecond accuracy from the node's RTOS.
+
+The 1520 ms idle window following the contention phase provides a gap for gateway maintenance tasks (node eviction, deferred FRAM writes) while extending the superframe period to 3 s to reduce the duty cycle burden on the 433 MHz ISM band.
+
+TDMA is the canonical choice for deterministic WSN MAC protocols where latency bounds and collision-free delivery are required [5]. Unlike CSMA-CA, TDMA eliminates hidden-node problems and provides bounded worst-case latency, which is O(1) in the number of nodes — an uplink delay of at most one superframe (3 s) regardless of network load. Demirkol et al. [5] survey the trade-offs of MAC protocols for WSNs and identify TDMA as superior for periodic telemetry applications with a known node count.
 
 ### 4.2 Beacon and Time Synchronisation
 
@@ -78,25 +82,32 @@ The gateway broadcasts a `BeaconPacket` (8 bytes) at the start of every superfra
 - Superframe counter `sfCount` (hop-sequence seed)
 - `slotMask` bitmask of occupied slots
 
-Nodes derive their transmit time from the beacon receive timestamp:
+Nodes derive their slot times from the beacon receive timestamp. Because the beacon is received `BEACON_AIR_MS` (18 ms) after the gateway begins transmitting it, this propagation delay is subtracted to recover the gateway's superframe start before adding the slot offsets:
 
 ```
-txTime = beaconReceiveTime + BEACON_MS + (slotId − 1) × SLOT_PAIR_MS
+dlStart = beaconReceiveTime + (BEACON_MS − BEACON_AIR_MS) + (slotId − 1) × SLOT_PAIR_MS
+txTime  = dlStart + SLOT_DL_MS
 ```
 
-This *anchor-based* timing model re-synchronises every superframe, preventing drift accumulation. Palattella et al. [6] show that anchor-based synchronisation with per-superframe re-sync achieves sub-millisecond timing accuracy on comparable hardware, which is sufficient for the 80 ms UL window used here.
+This *anchor-based* timing model re-synchronises every superframe, preventing drift accumulation. Palattella et al. [6] show that anchor-based synchronisation with per-superframe re-sync achieves sub-millisecond timing accuracy on comparable hardware, which is sufficient for the 100 ms UL window used here.
 
 ### 4.3 Contention Window and Dynamic Registration
 
-New nodes join via a *slotted contention window* appended at the end of each superframe. A joining node transmits a 4-byte `JoinRequestPacket` (carrying a 16-bit CRC-derived device UID from the ESP32 eFuse MAC) and applies a random backoff of 0–30 ms to reduce collision probability. The gateway responds with a `JoinAckPacket` assigning a slot ID.
+New nodes join via a *slotted contention window* appended at the end of each superframe. A joining node transmits a 4-byte `JoinRequestPacket` (carrying a 16-bit CRC-derived device UID from the ESP32 eFuse MAC) and applies a random backoff of 0–25 ms to reduce collision probability. The gateway responds with a `JoinAckPacket` assigning a slot ID.
 
 This mechanism is analogous to the random-access channel (RACH) used in cellular networks [7] and ensures that nodes self-organise without pre-provisioning. The use of a hardware-derived UID (CRC-16/CCITT of the 6-byte eFuse MAC) guarantees uniqueness without a registration server.
 
-### 4.4 Packet Design and Fixed-Point Encoding
+### 4.4 Network Epoch and Slot Invalidation
+
+Each `BeaconPacket` carries an 8-bit `epoch` counter initialised to a random value at gateway boot. The epoch is incremented by 1 on every node eviction. A registered node caches the epoch at join time (`s_joinEpoch`); if the beacon epoch differs on a subsequent superframe, the node immediately discards its slot assignment and re-contends. This prevents a stale node from transmitting into a slot that may have been reassigned to a different device while the network was unreachable.
+
+Eviction itself is conservative: the gateway only reclaims a slot when the network is full (all 8 slot bits set in `slotMask`) and the occupying node has missed `NODE_TIMEOUT_SFS` = 8 consecutive superframes (~24 s). When free slots are available, stale nodes retain their assignment so they can rejoin without contention if they come back online within a reasonable interval.
+
+### 4.5 Packet Design and Fixed-Point Encoding
 
 All packet structures are `#pragma pack(1)` to eliminate alignment padding, ensuring byte-for-byte compatibility between the node's transmit buffer and the gateway's receive buffer regardless of compiler version or target architecture. This practice is standard in embedded protocol design [8].
 
-Floating-point sensor values are encoded as integers with implicit scale factors (voltage ÷ 10, current ÷ 1000, power ÷ 10, frequency ÷ 10, power factor ÷ 100), reducing the 30-byte TelemetryPacket to the minimum necessary wire representation and avoiding floating-point ABI differences between compilers.
+Floating-point sensor values are encoded as integers with implicit scale factors (voltage ÷ 10, current ÷ 1000, power ÷ 10, frequency ÷ 10, power factor ÷ 100), keeping the 32-byte TelemetryPacket compact while avoiding floating-point ABI differences between compilers. The packet also carries diagnostic fields (`seqCounter`, `beaconRSSI`, `fwVersion`), relay schedule state, and `alarmThreshold` — so the gateway can reconstruct the full node state from each uplink without additional side-channel messages.
 
 ---
 
@@ -119,9 +130,9 @@ The PZEM-004T v3 uses a current transformer for non-invasive AC current measurem
 
 ### 5.2 Decoupled Sampling Task
 
-PZEM reads are executed in a dedicated FreeRTOS task (`pzemTask`) pinned to Core 0 at 500 ms intervals, completely decoupled from the TDMA radio task on Core 1. A mutex (`g_pzemMutex`) protects the shared `PzemData` struct. The TDMA task snapshots the latest reading at transmit time.
+PZEM reads are executed in a dedicated FreeRTOS task (`pzemTask`) pinned to Core 0 at 500 ms intervals, completely decoupled from the TDMA radio task on Core 1. A mutex (`g_pzemMutex`) protects the shared `PzemData` struct. The TDMA task snapshots the latest reading at transmit time without waiting for a fresh sample.
 
-This design prevents Modbus read latency (typically 80–120 ms for a full register scan) from blocking the radio timing path. The 110 ms PZEM pre-read margin (`PZEM_PRE_READ_MS`) was selected to ensure fresh data is available even if the sampling task is slightly delayed by the RTOS scheduler.
+This design prevents Modbus read latency (typically 80–120 ms for a full register scan) from blocking the radio timing path. Because the sampling period (500 ms) is much shorter than the superframe (3000 ms), the data available at uplink time is always less than one sampling interval old — adequate for load monitoring and control applications.
 
 ### 5.3 Energy Delta Encoding
 
@@ -143,15 +154,16 @@ The gateway accumulates these deltas into a persistent 32-bit total (`accumEnerg
 
 FreeRTOS on the dual-core ESP32 is used as follows:
 
-| Task        | Core | Priority | Stack  | Purpose                       |
-|-------------|------|----------|--------|-------------------------------|
-| GW_TDMA     | 1    | 2        | 8 KB   | Radio timing, beacon, UL/DL   |
-| NODE_TDMA   | 1    | 2        | 8 KB   | Beacon listen, TX, DL receive |
-| PZEM        | 0    | 1        | 4 KB   | Modbus sampling               |
-| SCHED       | 0    | 1        | 2 KB   | Relay schedule evaluation     |
-| NUDGE       | 0    | 1        | 1 KB   | LED blink (task notification) |
-| Log drain   | 0    | 1        | 2 KB   | Async serial output           |
-| Web/WiFi    | 0    | 1        | ESP-IDF managed | HTTP, WebSocket     |
+| Task        | Core | Priority | Stack  | Purpose                                       |
+|-------------|------|----------|--------|-----------------------------------------------|
+| GW_TDMA     | 1    | 2        | 8 KB   | Radio timing, beacon, UL/DL slots             |
+| NODE_TDMA   | 1    | 2        | 8 KB   | Beacon listen, DL receive, UL transmit        |
+| PZEM        | 0    | 1        | 4 KB   | Modbus sampling (continuous, ~500 ms period)  |
+| SCHED       | 0    | 1        | 2 KB   | Relay schedule evaluation (10 s period)       |
+| LED         | 0    | 1        | 1 KB   | Two-color state LED + nudge blink             |
+| FRAM        | 0    | 0        | 2 KB   | Deferred I²C FRAM writes (queue-driven)       |
+| Log drain   | 0    | 1        | 2 KB   | Async serial output + WebSocket relay         |
+| Web/WiFi    | 0    | 1        | ESP-IDF managed | HTTP, WebSocket                     |
 
 Pinning the radio task to Core 1 at priority 2 ensures it is never preempted by the Wi-Fi stack (which runs on Core 0 at priority 1), protecting TDMA timing from Wi-Fi interrupt storms — a known issue on the ESP32 documented by Espressif [11].
 
@@ -182,9 +194,11 @@ A dirty counter per node (threshold n = 10) defers FRAM writes so that `framSave
 
 Node labels are written immediately on rename, since label changes are infrequent (low I²C bus impact) and losing a label assignment on power failure before the next dirty flush would be a visible UX regression.
 
-### 7.3 UID-Validated Restore
+### 7.3 UID-Validated Cross-Slot Restore
 
-On boot, energy and history are restored from FRAM only if the stored `deviceUID` matches the currently registered node UID. This guards against slot reassignment: if a node in slot 3 is replaced by a different device, the gateway will not apply the old node's energy total to the new hardware.
+On node join, the gateway dispatches a restore request to the `framTask` (Core 0). The task searches **all 8 FRAM blocks** by UID, not just the node's currently assigned slot index. This cross-slot lookup means that if the gateway reboots and assigns a node to a different slot ID, the node's label, energy total, and history ring buffer are still recovered correctly from wherever they were previously stored.
+
+`framLoadAll()` is a deliberate no-op at boot — all restore operations are deferred until a node joins and its UID is confirmed by a successful `JoinAck`. This ensures stale slot data from a previous occupant is never applied to a newly registered device.
 
 ---
 
@@ -231,7 +245,7 @@ This separation prevents gateway browser-clock jitter (which can be ±1–2 s wh
 
 ### 9.1 Rationale
 
-The base TDMA protocol broadcasts packets on the unlicensed 433 MHz ISM band without authentication or confidentiality. In deployments where relay commands must be protected from replay or spoofing, an optional AES-128 CTR encryption layer is compiled in via the `LORA_ENCRYPTED` preprocessor flag. CTR mode is chosen because it produces no padding overhead (important for fixed-length radio packets), is immune to CBC padding-oracle attacks, and is available via the mbedTLS library already present in the ESP-IDF toolchain.
+The base TDMA protocol broadcasts packets on the unlicensed 433 MHz ISM band without authentication or confidentiality. In deployments where relay commands must be protected from replay or spoofing, an optional AES-128 CTR encryption layer is compiled in via the `PKT_ENCRYPTION` preprocessor flag. CTR mode is chosen because it produces no padding overhead (important for fixed-length radio packets), is immune to CBC padding-oracle attacks, and is available via the mbedTLS library already present in the ESP-IDF toolchain.
 
 ### 9.2 Nonce Construction
 
@@ -273,17 +287,19 @@ CRC-16/CCITT (poly 0x1021, init 0xFFFF) has a minimum Hamming distance of 4 for 
 
 ## 11. Summary of Design Decisions
 
-| Requirement                          | Design Choice                             | Rationale                                       |
-|--------------------------------------|-------------------------------------------|-------------------------------------------------|
-| Multi-node collision-free uplink     | TDMA superframe                           | Bounded latency, no hidden-node collisions [5]  |
-| Narrowband interference resilience   | Frequency-hopping channel plan            | Distributed interference exposure [4]           |
-| Sub-2 s telemetry update rate        | SF7, 125 kHz BW, 210 ms slots            | Minimises time-on-air [3]                       |
-| Energy accumulation across resets    | Delta encoding + FRAM persistence         | Counter-rollover immunity; NVS wear avoidance [13] |
-| Web UI without cloud dependency      | ESP32 AP+STA + LittleFS SPA              | Self-contained; works without internet [14]     |
-| Real-time command delivery           | WebSocket over ESPAsyncWebServer          | Low-latency bidirectional push [15]             |
-| Wi-Fi stack isolation from radio     | Core pinning + FreeRTOS priority          | ESP32 dual-core RTOS best practice [11]         |
-| Schedule reliability                 | Dual-clock with hysteresis correction     | Prevents relay chatter from UI clock jitter     |
-| Optional relay-command authentication | AES-128 CTR + RFID key provisioning      | No-overhead cipher; physical proximity as trust boundary |
+| Requirement                          | Design Choice                                    | Rationale                                         |
+|--------------------------------------|--------------------------------------------------|---------------------------------------------------|
+| Multi-node collision-free uplink     | TDMA superframe (3000 ms period)                 | Bounded latency, no hidden-node collisions [5]    |
+| Narrowband interference resilience   | Frequency-hopping channel plan                   | Distributed interference exposure [4]             |
+| Sub-3 s telemetry update rate        | SF6, 125 kHz BW, 165 ms DL-first slots          | Maximises data rate; minimises time-on-air [3]    |
+| Energy accumulation across resets    | Delta encoding + FRAM persistence                | Counter-rollover immunity; NVS wear avoidance [13] |
+| Slot persistence across reboots      | Cross-slot UID lookup + deferred FRAM restore    | Node data survives slot reassignment              |
+| Stale slot detection                 | Network epoch in BeaconPacket                    | Guarantees re-contention when topology changes    |
+| Web UI without cloud dependency      | ESP32 AP+STA + LittleFS SPA                     | Self-contained; works without internet [14]       |
+| Real-time command delivery           | WebSocket over ESPAsyncWebServer                 | Low-latency bidirectional push [15]               |
+| Wi-Fi stack isolation from radio     | Core pinning + FreeRTOS priority                 | ESP32 dual-core RTOS best practice [11]           |
+| Schedule reliability                 | Dual-clock with hysteresis correction            | Prevents relay chatter from UI clock jitter       |
+| Optional relay-command authentication | AES-128 CTR + RFID key provisioning (PKT_ENCRYPTION) | No-overhead cipher; physical proximity as trust boundary |
 
 ---
 

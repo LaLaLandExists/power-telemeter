@@ -44,6 +44,10 @@
       <svg id="themeIco" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/></svg>
     </button>
   </div>
+  <div class="commit-banner" id="commitBanner">
+    <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" style="animation:spin 1s linear infinite"><polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-.08-4.36"/></svg>
+    Committing to node&hellip;
+  </div>
 </header>
 
 <div class="wrap">
@@ -414,12 +418,16 @@
               Node offline — controls unavailable
             </div>
 
-            <div class="relay-state-box">
+            <div class="relay-state-box" id="relayStateBox">
               <div>
                 <div class="relay-state-lbl">Relay State</div>
                 <div class="relay-state-val off M" id="relayState">OFF</div>
               </div>
               <div class="relay-mode-lbl" id="relayMode">MANUAL</div>
+            </div>
+            <div class="relay-warn-tag M" id="relayWarnTag">
+              <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>
+              Relay may be ineffective — load still drawing power
             </div>
 
             <div id="relayCtrl">
@@ -432,10 +440,6 @@
                 <div class="tab-pane active" id="tabManual">
                   <div style="display:flex;align-items:center;justify-content:flex-end">
                     <label class="tgl"><input type="checkbox" id="relayToggle" onchange="doManual(this.checked)"><div class="ts"></div></label>
-                  </div>
-                  <div class="commit-banner M" id="commitBanner">
-                    <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" style="animation:spin 1s linear infinite"><polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-.08-4.36"/></svg>
-                    Committing&hellip;
                   </div>
                 </div>
                 <!-- Schedule -->
@@ -454,10 +458,6 @@
                     <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="18" rx="2" ry="2"/><line x1="16" y1="2" x2="16" y2="6"/><line x1="8" y1="2" x2="8" y2="6"/><line x1="3" y1="10" x2="21" y2="10"/></svg>
                     Set Daily Schedule
                   </button>
-                  <div class="commit-banner M" id="commitBannerSched">
-                    <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" style="animation:spin 1s linear infinite"><polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-.08-4.36"/></svg>
-                    Committing&hellip;
-                  </div>
                 </div>
               </div>
             </div>
@@ -500,10 +500,6 @@
                 <button class="thr-set-btn M" onclick="doSetThreshold()">Set</button>
               </div>
               <div style="font-size:10px;color:var(--txd);font-family:'JetBrains Mono',monospace">PZEM alarm triggers when active power exceeds this threshold.</div>
-            </div>
-            <div class="commit-banner M" id="thrBanner">
-              <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" style="animation:spin 1s linear infinite"><polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-.08-4.36"/></svg>
-              Committing&hellip;
             </div>
           </div>
         </div>

@@ -9,7 +9,8 @@
       "PowerShell(New-Item -ItemType Directory -Force -Path \"c:\\\\Users\\\\Lawrence Joven Garol\\\\Documents\\\\dev\\\\power-telemeterv2\\\\rollback\\\\sf7\")",
       "PowerShell(Copy-Item \"c:\\\\Users\\\\Lawrence Joven Garol\\\\Documents\\\\dev\\\\power-telemeterv2\\\\src\\\\tdma_protocol.h\" \"c:\\\\Users\\\\Lawrence Joven Garol\\\\Documents\\\\dev\\\\power-telemeterv2\\\\rollback\\\\sf7\\\\tdma_protocol.h\")",
       "PowerShell(Copy-Item \"c:\\\\Users\\\\Lawrence Joven Garol\\\\Documents\\\\dev\\\\power-telemeterv2\\\\src\\\\gateway_tdma_task.cpp\" \"c:\\\\Users\\\\Lawrence Joven Garol\\\\Documents\\\\dev\\\\power-telemeterv2\\\\rollback\\\\sf7\\\\gateway_tdma_task.cpp\")",
-      "PowerShell(Copy-Item \"c:\\\\Users\\\\Lawrence Joven Garol\\\\Documents\\\\dev\\\\power-telemeterv2\\\\src\\\\node_tdma_task.cpp\" \"c:\\\\Users\\\\Lawrence Joven Garol\\\\Documents\\\\dev\\\\power-telemeterv2\\\\rollback\\\\sf7\\\\node_tdma_task.cpp\")"
+      "PowerShell(Copy-Item \"c:\\\\Users\\\\Lawrence Joven Garol\\\\Documents\\\\dev\\\\power-telemeterv2\\\\src\\\\node_tdma_task.cpp\" \"c:\\\\Users\\\\Lawrence Joven Garol\\\\Documents\\\\dev\\\\power-telemeterv2\\\\rollback\\\\sf7\\\\node_tdma_task.cpp\")",
+      "PowerShell(Get-ChildItem -Path \"c:\\\\Users\\\\Lawrence Joven Garol\\\\Documents\\\\dev\\\\power-telemeterv2\\\\src\" | Where-Object { $_.Name -match 'tdma|protocol' } | Select-Object FullName)"
     ]
   }
 }

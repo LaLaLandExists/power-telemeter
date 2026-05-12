@@ -46,33 +46,38 @@ static const float LORA_CHANNELS[N_CHANNELS] = {
 // -----------------------------------------------------------------------------
 // TDMA timing constants (milliseconds)
 //
-// Superframe = Beacon + N×SlotPair + CWin_UL + CWin_DL + EndGuard
-// ≈ 40 + 8×210 + 60 + 40 + 20 ≈ 1840 ms
+// Superframe = Beacon + N×SlotPair + CWin_UL + CWin_DL + Idle + EndGuard
+//            = 40 + 8×165 + 60 + 40 + 1520 + 20 = 3000 ms
 //
 // SlotPair breakdown — DL-first ordering:
-//   DL window  : 80 ms  (GW TX -> node RX; carries UID for ghost detection)
-//   UL window  : 100 ms (node TX -> GW RX; extended to absorb beacon-timing latency)
-//   Guard      : 30 ms  (trimmed to keep SLOT_PAIR_MS = 210 ms)
+//   DL window  : 50 ms  (GW TX → node RX; ~11 ms airtime, 4.5× margin)
+//   UL window  : 100 ms (node TX → GW RX; kept wide to absorb beacon-latency jitter)
+//   Guard      : 15 ms  (SX1278 mode-switch <1 ms; 15 ms covers FreeRTOS tick budget)
 //
-// UL window was widened from 80→100 ms because in DL-first ordering the node's
-// TX start lags the gateway's RX open by beacon-arrival latency (~2–5 ms) plus
-// radio setup overhead, leaving < 5 ms of margin with an 80 ms window.  The 20 ms
-// added here gives comfortable margin without changing SLOT_PAIR_MS or superframe length.
+// UL window is intentionally NOT reduced: the node's TX start lags the gateway's
+// RX open by beacon-arrival latency (~2–5 ms) + radio setup overhead.  The 20 ms
+// pad over TelemetryPacket airtime (~34 ms) has been observed as necessary.
+//
+// The 360 ms IDLE_MS recovered from tighter slots is placed after the contention
+// window.  The gateway uses it for maintenance (eviction, FRAM writes); the node
+// re-enters ST_LISTEN and waits for the next beacon with a 2040 ms timeout.
 // -----------------------------------------------------------------------------
 #define BEACON_MS               40
 #define SLOT_UL_MS              100
-#define SLOT_DL_MS              80
-#define SLOT_GUARD_MS           30
-#define SLOT_PAIR_MS            (SLOT_UL_MS + SLOT_DL_MS + SLOT_GUARD_MS)  // 210 ms
+#define SLOT_DL_MS              50
+#define SLOT_GUARD_MS           15
+#define SLOT_PAIR_MS            (SLOT_UL_MS + SLOT_DL_MS + SLOT_GUARD_MS)  // 165 ms
 #define PHASE_GUARD_US          500     // us - PLL re-lock between hops
 #define CONTENTION_UL_MS        60
 #define CONTENTION_DL_MS        40
-#define END_GUARD_MS            20     // guard after contention window
+#define IDLE_MS                 1520    // post-contention idle window; includes 360 ms recovered from slot guard reductions + 1160 ms intentional SF extension
+#define END_GUARD_MS            20     // RF-quiet buffer before next beacon TX
 
-// Total superframe duration (conservative, includes all phase guards)
+// Total superframe duration — adjust IDLE_MS to change the period; verify the
+// computed value matches the dashboard's SUPERFRAME_MS constant in app.js.
 #define SUPERFRAME_MS \
   (BEACON_MS + MAX_NODES * SLOT_PAIR_MS + \
-   CONTENTION_UL_MS + CONTENTION_DL_MS + END_GUARD_MS)  // ~1840 ms
+   CONTENTION_UL_MS + CONTENTION_DL_MS + IDLE_MS + END_GUARD_MS)  // 3000 ms
 
 // On-air duration of an 8-byte BeaconPacket at SF6 / 125 kHz / CR 4:5,
 // 8-symbol preamble, implicit header, CRC enabled.
@@ -84,7 +89,7 @@ static const float LORA_CHANNELS[N_CHANNELS] = {
 // -----------------------------------------------------------------------------
 // Application timeouts
 // -----------------------------------------------------------------------------
-#define NODE_TIMEOUT_SFS        8       // Evict after 8 consecutive missed superframes (~15 s at 1840 ms/SF)
+#define NODE_TIMEOUT_SFS        8       // Evict after 8 consecutive missed superframes (~24 s at 3000 ms/SF)
 #define PENDING_TIMEOUT_MS      15000   // Pending command clears after 15 s
 #define RTC_CORRECTION_THRESHOLD_MS 2000  // Only correct schedule RTC if drift > 2 s
 
@@ -92,13 +97,12 @@ static const float LORA_CHANNELS[N_CHANNELS] = {
 // Packet type IDs
 // -----------------------------------------------------------------------------
 #define PKT_TELEMETRY           0x01    // Node -> GW,   32 bytes
-#define PKT_RELAY_MANUAL        0x02    // GW   -> Node,  5 bytes (DlHeader + relayState)
-#define PKT_RELAY_SCHEDULE      0x03    // GW   -> Node,  9 bytes (DlHeader + 5)
+#define PKT_RELAY_MANUAL        0x02    // GW   -> Node,  3 bytes (DlHeader + relayState)
+#define PKT_RELAY_SCHEDULE      0x03    // GW   -> Node,  7 bytes (DlHeader + 5)
 #define PKT_BEACON              0x04    // GW   -> All,   8 bytes
-#define PKT_RELAY_CLEAR         0x05    // GW   -> Node,  4 bytes (DlHeader only)
-#define PKT_THRESHOLD           0x06    // GW   -> Node,  6 bytes (DlHeader + thresh_lo/hi)
-#define PKT_NUDGE               0x07    // GW   -> Node,  4 bytes (DlHeader only)
-#define PKT_NOOP                0x08    // GW   -> Node,  4 bytes (DlHeader only — carries UID)
+#define PKT_RELAY_CLEAR         0x05    // GW   -> Node,  2 bytes (DlHeader only)
+#define PKT_THRESHOLD           0x06    // GW   -> Node,  4 bytes (DlHeader + thresh_lo/hi)
+#define PKT_NUDGE               0x07    // GW   -> Node,  2 bytes (DlHeader only)
 #define PKT_JOIN_REQUEST        0xA0    // Node -> GW,    4 bytes
 #define PKT_JOIN_ACK            0xA1    // GW   -> Node,  4 bytes
 
@@ -117,15 +121,15 @@ static const float LORA_CHANNELS[N_CHANNELS] = {
  *   bytes 2-7  <rest>   — AES-128 CTR encrypted with nonce (sfCount, slotId=0, PKT_DIR_BEACON)
  * In plain builds the full packet is sent unencrypted (same struct layout).
  *
- * epoch: initialised to esp_random() on gateway boot.
- * A node that reconnects after a gateway reboot sees a different epoch and
- * re-contends.  Within a running network, ghost-node eviction is handled by
- * the DL-first UID check (NoopPacket carries the owner's UID every superframe).
+ * epoch: initialised to esp_random() on gateway boot; incremented by 1 on every
+ * node eviction (only possible when all 8 slots are full).  A node whose stored
+ * s_joinEpoch differs from the beacon epoch knows its slot assignment may have
+ * been invalidated and re-contends to obtain a fresh assignment.
  */
 struct BeaconPacket {
-  uint16_t sfCount;    // bytes 0-1: plaintext on wire — superframe counter, hop seed
+  uint16_t sfCount;    // bytes 0-1: plaintext on wire - superframe counter, hop seed
   uint8_t  pktType;    // byte 2:  0x04 (encrypted in PKT_ENCRYPTION builds)
-  uint8_t  epoch;      // byte 3:  network epoch — incremented on each node join
+  uint8_t  epoch;      // byte 3:  network epoch - incremented every node eviction
   uint8_t  hour;       // byte 4:  0–23
   uint8_t  minute;     // byte 5:  0–59
   uint8_t  second;     // byte 6:  0–59
@@ -167,36 +171,26 @@ struct TelemetryPacket {
 static_assert(sizeof(TelemetryPacket) == 32, "TelemetryPacket must be 32 bytes");
 
 /**
- * DlHeader (4 bytes) — base for every gateway→node downlink packet.
+ * DlHeader (2 bytes) — base for every gateway->node downlink packet.
  *
- * uid_lo/uid_hi identify the intended slot owner.  The gateway always populates
- * these from g_nodes[slotIdx].deviceUID before transmitting.  A node that
- * receives a UID that does not match its own g_nodeUID treats the slot as
- * reassigned and self-evicts to ST_CONTENDING — no gateway intervention needed.
- *
- * All DL command structs extend DlHeader so the UID check is uniform across
- * all packet types at the same byte offsets (bytes 2-3 on the wire).
+ * Slot ownership is validated by the epoch field in BeaconPacket: if
+ * bcn.epoch != s_joinEpoch the node re-contends before the next data slot,
+ * so a stale node can never occupy a slot belonging to another device.
+ * The UID fields previously in this header are no longer needed.
  */
 struct DlHeader {
   uint8_t pktType;
   uint8_t nodeId;
-  uint8_t uid_lo;
-  uint8_t uid_hi;
 };
-static_assert(sizeof(DlHeader) == 4, "DlHeader must be 4 bytes");
+static_assert(sizeof(DlHeader) == 2, "DlHeader must be 2 bytes");
 
-/** NoopPacket (4 bytes) — sent every DL window when no command is queued.
- *  Carries the UID so a ghost node can self-evict even when idle. */
-struct NoopPacket : DlHeader {};
-static_assert(sizeof(NoopPacket) == 4, "NoopPacket must be 4 bytes");
-
-/** RelayCommandPacket (5 bytes) — immediate relay toggle */
+/** RelayCommandPacket (3 bytes) — immediate relay toggle */
 struct RelayCommandPacket : DlHeader {
   uint8_t relayState;   // 0=OFF, 1=ON
 };
-static_assert(sizeof(RelayCommandPacket) == 5, "RelayCommandPacket must be 5 bytes");
+static_assert(sizeof(RelayCommandPacket) == 3, "RelayCommandPacket must be 3 bytes");
 
-/** RelaySchedulePacket (9 bytes) — daily recurring window */
+/** RelaySchedulePacket (7 bytes) — daily recurring window */
 struct RelaySchedulePacket : DlHeader {
   uint8_t onState;    // Relay state INSIDE the window (1=ON is the normal case)
   uint8_t startH;
@@ -204,22 +198,22 @@ struct RelaySchedulePacket : DlHeader {
   uint8_t endH;
   uint8_t endM;
 };
-static_assert(sizeof(RelaySchedulePacket) == 9, "RelaySchedulePacket must be 9 bytes");
+static_assert(sizeof(RelaySchedulePacket) == 7, "RelaySchedulePacket must be 7 bytes");
 
-/** RelayClearPacket (4 bytes) — cancel active schedule, revert to manual */
+/** RelayClearPacket (2 bytes) — cancel active schedule, revert to manual */
 struct RelayClearPacket : DlHeader {};
-static_assert(sizeof(RelayClearPacket) == 4, "RelayClearPacket must be 4 bytes");
+static_assert(sizeof(RelayClearPacket) == 2, "RelayClearPacket must be 2 bytes");
 
-/** ThresholdPacket (6 bytes) — set PZEM over-power alarm */
+/** ThresholdPacket (4 bytes) — set PZEM over-power alarm */
 struct ThresholdPacket : DlHeader {
   uint8_t thresh_lo;   // watts, little-endian
   uint8_t thresh_hi;
 };
-static_assert(sizeof(ThresholdPacket) == 6, "ThresholdPacket must be 6 bytes");
+static_assert(sizeof(ThresholdPacket) == 4, "ThresholdPacket must be 4 bytes");
 
-/** NudgePacket (4 bytes) — blink LED for physical identification */
+/** NudgePacket (2 bytes) — blink LED for physical identification */
 struct NudgePacket : DlHeader {};
-static_assert(sizeof(NudgePacket) == 4, "NudgePacket must be 4 bytes");
+static_assert(sizeof(NudgePacket) == 2, "NudgePacket must be 2 bytes");
 
 /** JoinRequestPacket (4 bytes) — contention uplink from new node */
 struct JoinRequestPacket {
@@ -239,7 +233,7 @@ struct JoinAckPacket {
 
 #pragma pack(pop)
 
-// Largest DL command (RelaySchedulePacket = 9 bytes).
+// Largest DL command (RelaySchedulePacket = 7 bytes).
 // SF6 implicit header requires a fixed receive length; all DL frames are
 // zero-padded to this size so every slot DL window uses one implicitHeader() call.
 #define MAX_DL_PAYLOAD_LEN  sizeof(RelaySchedulePacket)

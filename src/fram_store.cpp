@@ -94,36 +94,10 @@ void framLoadAll()
 {
   if (!s_framOk) return;
 
-  for (uint8_t i = 0; i < MAX_NODES; i++) {
-    uint16_t base = nodeBase(i);
-    NodeState& ns = g_nodes[i];
-
-    // --- Labels: restore unconditionally (user-assigned, slot-bound) ---
-    char label[LABEL_BYTES];
-    s_fram.read(base + OFF_LABEL, reinterpret_cast<uint8_t*>(label), LABEL_BYTES);
-    label[LABEL_BYTES - 1] = '\0';  // safety null-terminate
-    if (label[0] != '\0') {
-      strlcpy(ns.label, label, sizeof(ns.label));
-      logAsync("[FRAM] Slot %u: restored label \"%s\"\n", i + 1, ns.label);
-    }
-
-    // --- Energy + history: UID-validated ---
-    uint16_t framUID = s_fram.read16(base + OFF_UID);
-    if (framUID == 0x0000 || framUID == 0xFFFF) continue;
-    if (!ns.active || ns.deviceUID != framUID) continue;
-
-    ns.accumEnergy = s_fram.read32(base + OFF_ENERGY);
-    ns.histHead    = (int)s_fram.read32(base + OFF_HIST_HEAD);
-    ns.histCount   = (int)s_fram.read32(base + OFF_HIST_COUNT);
-    s_fram.read(base + OFF_HISTORY,
-                reinterpret_cast<uint8_t*>(ns.history),
-                HISTORY_BYTES);
-
-    logAsync("[FRAM] Slot %u (UID=0x%04X): restored energy=%lu Wh, "
-             "histCount=%d\n",
-             i + 1, framUID,
-             (unsigned long)ns.accumEnergy, ns.histCount);
-  }
+  // Labels, energy, and history are all restored on demand via framQueueRestore()
+  // after a node joins and its UID is confirmed. Nothing is restored here at boot
+  // so that stale slot data from a previous node never pollutes a new joiner.
+  (void)0;
 }
 
 void framSaveEnergy(uint8_t nodeIdx)
@@ -160,11 +134,15 @@ void framSaveLabel(uint8_t nodeIdx)
   const NodeState& ns = g_nodes[nodeIdx];
   uint16_t base = nodeBase(nodeIdx);
 
+  // Write UID alongside label so the cross-slot UID search in framTask()
+  // FRAM_RESTORE can find this entry even when the slot index shifts after reboot.
+  s_fram.write16(base + OFF_UID, ns.deviceUID);
   s_fram.write(base + OFF_LABEL,
                reinterpret_cast<uint8_t*>(const_cast<char*>(ns.label)),
                LABEL_BYTES);
 
-  logAsync("[FRAM] Slot %u: saved label \"%s\"\n", nodeIdx + 1, ns.label);
+  logAsync("[FRAM] Slot %u (UID=0x%04X): saved label \"%s\"\n",
+           nodeIdx + 1, ns.deviceUID, ns.label);
 }
 
 // ---------------------------------------------------------------------------
@@ -185,6 +163,7 @@ static struct {
   uint32_t     accumEnergy;
   int32_t      histHead;
   int32_t      histCount;
+  char         label[LABEL_BYTES];
   HistoryPoint history[HISTORY_MAX_POINTS];
 } s_snap;
 
@@ -214,19 +193,31 @@ static void framTask(void* /*params*/)
     if (idx >= MAX_NODES) continue;
 
     if (msg & FRAM_RESTORE) {
-      // Verify FRAM UID matches the node that just joined before applying data.
-      uint16_t base    = nodeBase(idx);
-      uint16_t framUID = s_fram.read16(base + OFF_UID);
-
       uint16_t nodeUID = 0;
       if (xSemaphoreTake(g_nodesMutex, pdMS_TO_TICKS(20)) == pdTRUE) {
         nodeUID = g_nodes[idx].deviceUID;
         xSemaphoreGive(g_nodesMutex);
       }
+      if (nodeUID == 0x0000 || nodeUID == 0xFFFF) continue;
 
-      if (framUID == 0x0000 || framUID == 0xFFFF || framUID != nodeUID) continue;
+      // Search all FRAM slots for this UID — the node may have been assigned
+      // a different slot index after a gateway reboot, so we can't assume the
+      // data lives at nodeBase(idx).
+      uint8_t framSlot = 0xFF;
+      for (uint8_t s = 0; s < MAX_NODES; s++) {
+        if (s_fram.read16(nodeBase(s) + OFF_UID) == nodeUID) {
+          framSlot = s;
+          break;
+        }
+      }
+      if (framSlot == 0xFF) continue;
 
-      // Read from FRAM without mutex (~47 ms at 400 kHz).
+      // Read label, energy, and history from FRAM without holding the mutex
+      // (~47 ms at 400 kHz for the history block).
+      uint16_t base = nodeBase(framSlot);
+      s_fram.read(base + OFF_LABEL,
+                  reinterpret_cast<uint8_t*>(s_snap.label), LABEL_BYTES);
+      s_snap.label[LABEL_BYTES - 1] = '\0';
       s_snap.accumEnergy = s_fram.read32(base + OFF_ENERGY);
       s_snap.histHead    = (int32_t)s_fram.read32(base + OFF_HIST_HEAD);
       s_snap.histCount   = (int32_t)s_fram.read32(base + OFF_HIST_COUNT);
@@ -235,6 +226,9 @@ static void framTask(void* /*params*/)
                   HISTORY_BYTES);
 
       if (xSemaphoreTake(g_nodesMutex, pdMS_TO_TICKS(20)) == pdTRUE) {
+        if (s_snap.label[0] != '\0') {
+          strlcpy(g_nodes[idx].label, s_snap.label, sizeof(g_nodes[idx].label));
+        }
         g_nodes[idx].accumEnergy = s_snap.accumEnergy;
         g_nodes[idx].histHead    = (int)s_snap.histHead;
         g_nodes[idx].histCount   = (int)s_snap.histCount;
@@ -242,8 +236,10 @@ static void framTask(void* /*params*/)
         xSemaphoreGive(g_nodesMutex);
       }
 
-      logAsync("[FRAM] Slot %u (UID=0x%04X): restored energy=%lu Wh, histCount=%d\n",
-               idx + 1, framUID,
+      logAsync("[FRAM] Slot %u (UID=0x%04X) restored from FRAM slot %u: "
+               "label=\"%s\" energy=%lu Wh histCount=%d\n",
+               idx + 1, nodeUID, framSlot + 1,
+               s_snap.label[0] ? s_snap.label : "(none)",
                (unsigned long)s_snap.accumEnergy, (int)s_snap.histCount);
       continue;
     }

@@ -248,54 +248,37 @@ static void triggerNudge() {
 // All DL packets share the DlHeader layout:
 //   buf[0] = pktType
 //   buf[1] = nodeId
-//   buf[2] = uid_lo
-//   buf[3] = uid_hi
-//   buf[4+] = command-specific payload
+//   buf[2+] = command-specific payload
 //
-// UID check is the primary ghost-eviction mechanism (DL-first design).
-// A mismatch means this slot was reassigned; self-evict by clearing registration.
-// The UL is then suppressed by the ST_REGISTERED block after this call returns.
+// Slot validity is guaranteed by the epoch field in BeaconPacket: a node whose
+// stored s_joinEpoch differs from the beacon epoch re-contends before reaching
+// this point, so stale registrations cannot receive commands intended for another
+// device.
 // -----------------------------------------------------------------------------
 static void handleDownlink(const uint8_t* buf, int16_t len) {
-  if (len < 4) return;
-  uint8_t  type   = buf[0];
-  uint8_t  nodeId = buf[1];
-  uint16_t rxUID  = (uint16_t)buf[2] | ((uint16_t)buf[3] << 8);
-
-  // Ghost self-eviction: UID mismatch means the gateway's DL was addressed to
-  // the current slot owner, which is not us.  Re-contend silently.
-  if (rxUID != g_nodeUID) {
-    logAsync("[NODE-DL] UID mismatch (rx=0x%04X mine=0x%04X) - re-contending\n",
-             rxUID, g_nodeUID);
-    g_nodeRegistered = false;
-    g_nodeSlotId     = 0;
-    s_joinEpoch      = 0xFF;
-    s_tdmaLedMode    = LED_MODE_CONTENDING;
-    return;
-  }
+  if (len < 2) return;
+  uint8_t type   = buf[0];
+  uint8_t nodeId = buf[1];
 
   if (nodeId != g_nodeSlotId && nodeId != BROADCAST_ADDR) return;
 
   switch (type) {
-  case PKT_NOOP:           // 4 bytes: DlHeader only — no action, UID already verified
-    break;
-
-  case PKT_RELAY_MANUAL:   // 5 bytes: DlHeader + relayState
-    if (len >= 5) {
+  case PKT_RELAY_MANUAL:   // 3 bytes: DlHeader + relayState
+    if (len >= 3) {
       g_relayMode  = 0;
       g_schedState = 0;
-      setRelay(buf[4]);
-      logAsync("[NODE-DL] Relay manual -> %s\n", buf[4] ? "ON" : "OFF");
+      setRelay(buf[2]);
+      logAsync("[NODE-DL] Relay manual -> %s\n", buf[2] ? "ON" : "OFF");
     }
     break;
 
-  case PKT_RELAY_SCHEDULE: // 9 bytes: DlHeader + onState + sH + sM + eH + eM
-    if (len >= 9) {
+  case PKT_RELAY_SCHEDULE: // 7 bytes: DlHeader + onState + sH + sM + eH + eM
+    if (len >= 7) {
       g_relayMode  = 1;
-      g_schedSH    = buf[5];
-      g_schedSM    = buf[6];
-      g_schedEH    = buf[7];
-      g_schedEM    = buf[8];
+      g_schedSH    = buf[3];
+      g_schedSM    = buf[4];
+      g_schedEH    = buf[5];
+      g_schedEM    = buf[6];
       g_schedState = 1;     // WAITING; evaluateSchedule() will flip to ACTIVE
       evaluateSchedule();
       logAsync("[NODE-DL] Schedule set %02d:%02d - %02d:%02d\n",
@@ -303,15 +286,15 @@ static void handleDownlink(const uint8_t* buf, int16_t len) {
     }
     break;
 
-  case PKT_RELAY_CLEAR:    // 4 bytes: DlHeader only
+  case PKT_RELAY_CLEAR:    // 2 bytes: DlHeader only
     g_relayMode  = 0;
     g_schedState = 0;
     logAsync("[NODE-DL] Schedule cleared\n");
     break;
 
-  case PKT_THRESHOLD:      // 6 bytes: DlHeader + thresh_lo + thresh_hi
-    if (len >= 6) {
-      uint16_t watts = (uint16_t)buf[4] | ((uint16_t)buf[5] << 8);
+  case PKT_THRESHOLD:      // 4 bytes: DlHeader + thresh_lo + thresh_hi
+    if (len >= 4) {
+      uint16_t watts = (uint16_t)buf[2] | ((uint16_t)buf[3] << 8);
       // Queue the write for pzemTask — it is the sole owner of Serial2.
       if (xSemaphoreTake(g_pzemMutex, pdMS_TO_TICKS(100)) == pdTRUE) {
         g_pzem.alarmThreshold      = watts;
@@ -323,7 +306,7 @@ static void handleDownlink(const uint8_t* buf, int16_t len) {
     }
     break;
 
-  case PKT_NUDGE:          // 4 bytes: DlHeader only
+  case PKT_NUDGE:          // 2 bytes: DlHeader only
     triggerNudge();
     break;
 
@@ -439,10 +422,8 @@ static void nodeTdmaTask(void* /*params*/) {
   uint32_t    beaconReceiveTime = 0;
   uint16_t    sfCount           = 0;
 
-  // Tune to Ch 0 and start continuous receive
+  // Tune to Ch 0; startReceive() is called at the top of the beacon listen loop.
   radio.setFrequency(LORA_CHANNELS[0]);
-  radio.implicitHeader(sizeof(BeaconPacket));
-  radio.startReceive();
 
   while (true) {
 
@@ -469,6 +450,11 @@ static void nodeTdmaTask(void* /*params*/) {
         int32_t remaining = (int32_t)(listenDeadline - millis());
         if (remaining <= 0) break;
 
+        // standby() before startReceive() — the radio may be left in RXCONTINUOUS
+        // mode by a previous timeout (JoinAck window, stale packet loop) or by the
+        // initial startReceive() at startup.  startReceive() on SX1278 returns
+        // RADIOLIB_ERR_UNSUPPORTED (-25) if called while already in RX mode.
+        radio.standby();
         radio.implicitHeader(sizeof(BeaconPacket));
         int16_t rxSt = radio.startReceive();
         if (rxSt != RADIOLIB_ERR_NONE) {
@@ -617,8 +603,7 @@ static void nodeTdmaTask(void* /*params*/) {
 
       // -- DL receive window (first) ---------------------------------
       // Hop to the correct channel and listen for the gateway DL.
-      // Gateway always sends: NoopPacket (idle) or a command, both carrying our UID.
-      // handleDownlink() self-evicts (clears g_nodeRegistered) on UID mismatch.
+      // Gateway only transmits when a command is queued; idle slots produce no DL.
       waitUntilMs(dlStart);
       radio.setFrequency(LORA_CHANNELS[ch]);
       delayMicroseconds(PHASE_GUARD_US);

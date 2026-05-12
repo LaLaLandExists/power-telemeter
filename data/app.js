@@ -2,6 +2,7 @@
 let cNid=null,chart=null,cMet='power',socket=null,wsOk=false,fbT=null;
 let NC=[],gwTimeSet=false,gwTime='--:--:--';
 let pendingCmd={};
+let relayOffAt={};
 let costRate=parseFloat(localStorage.getItem('pt-costRate'))||12.00;
 
 const MC={
@@ -19,6 +20,8 @@ const SL=['','Waiting','Active'];
 const SC=['','sched-badge waiting','sched-badge active'];
 const NUDGE_ICO='<svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg>';
 const NUDGED_ICO='<svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg>';
+const RELAY_WARN_W=5;       // watts: relay-off but still drawing power triggers warning
+const SUPERFRAME_MS=3000;   // grace period before showing relay-ineffective warning
 
 /* -- Theme ------------------------------------------------------- */
 const SUN_PATHS='<circle cx="12" cy="12" r="5"/><line x1="12" y1="1" x2="12" y2="3"/><line x1="12" y1="21" x2="12" y2="23"/><line x1="4.22" y1="4.22" x2="5.64" y2="5.64"/><line x1="18.36" y1="18.36" x2="19.78" y2="19.78"/><line x1="1" y1="12" x2="3" y2="12"/><line x1="21" y1="12" x2="23" y2="12"/><line x1="4.22" y1="19.78" x2="5.64" y2="18.36"/><line x1="18.36" y1="5.64" x2="19.78" y2="4.22"/>';
@@ -142,12 +145,21 @@ function onMsg(m){
   updGwTime();
 
   if(m.type==='nodes'){
-    NC=m.nodes||[];if(!cNid)renderGrid(NC);
+    NC=m.nodes||[];
+    NC.forEach(n=>{
+      if((n.relayState||0)===0){if(relayOffAt[n.id]===undefined)relayOffAt[n.id]=Date.now();}
+      else delete relayOffAt[n.id];
+    });
+    if(!cNid)renderGrid(NC);
     sT('idxCount',m.count||0);
     $('nodeCount').textContent=(m.count||0)+' node'+((m.count||0)!==1?'s':'');
   }
   else if(m.type==='telemetry'){
     const n=m.node;
+    const prev=NC.find(x=>x.id===n.id);
+    const prevRs=prev?prev.relayState:undefined;
+    if(n.relayState===1){delete relayOffAt[n.id];}
+    else if(n.relayState===0&&prevRs!==0){relayOffAt[n.id]=Date.now();}
     const o={id:n.id,label:n.label,online:n.online,rssi:n.rssi,voltage:n.voltage,current:n.current,power:n.power,energy:n.energy,frequency:n.frequency,powerFactor:n.powerFactor,relayState:n.relayState,relayMode:n.relayMode,schedState:n.schedState,alarmState:n.alarmState,age:n.age,pending:n.pending,hasSched:n.hasSched,schedStart:n.schedStart,schedEnd:n.schedEnd};
     const i=NC.findIndex(x=>x.id===n.id);if(i>=0)Object.assign(NC[i],o);else NC.push(o);
     if(!cNid)renderGrid(NC);
@@ -160,9 +172,9 @@ function onMsg(m){
     if(!cNid)renderGrid(NC);
   }
   else if(m.type==='time_set'){gwTimeSet=true;if(m.time)gwTime=m.time;updGwTime();}
-  else if(m.type==='threshold_ack'){if(m.node!==undefined)delete pendingCmd[m.node];$('thrBanner').classList.remove('show');$('thrCtrl').classList.remove('frozen');if(!m.success)alert('Threshold command failed');}
-  else if(m.type==='nudge_ack'){if(m.node!==undefined)delete pendingCmd[m.node];if(!m.success)alert('Nudge failed');}
-  else if(m.type==='relay_ack'||m.type==='schedule_ack'||m.type==='clear_ack'){if(m.node!==undefined)delete pendingCmd[m.node];if(!m.success)alert('Command failed');}
+  else if(m.type==='threshold_ack'){if(!m.success){if(m.node!==undefined)delete pendingCmd[m.node];alert('Threshold command failed');}}
+  else if(m.type==='nudge_ack'){if(!m.success){if(m.node!==undefined)delete pendingCmd[m.node];alert('Nudge failed');}}
+  else if(m.type==='relay_ack'||m.type==='schedule_ack'||m.type==='clear_ack'){if(!m.success){if(m.node!==undefined)delete pendingCmd[m.node];alert('Command failed');}}
   else if(m.type==='energy_cleared'){const i=NC.findIndex(x=>x.id===m.node);if(i>=0)NC[i].energy=0;if(cNid===m.node)updateDetail(NC.find(x=>x.id===cNid)||{});}
   else if(m.type==='all_energy_cleared'){NC.forEach(n=>n.energy=0);if(cNid){const c=NC.find(x=>x.id===cNid);if(c)updateDetail(c);}if(!cNid)renderGrid(NC);}
   else if(m.type==='log')appendLog(m.line);
@@ -211,11 +223,14 @@ function renderGrid(ns){
     if(isNew){c=document.createElement('div');c.className='node-card';c.dataset.id=n.id;c.onclick=()=>goNode(n.id);}
     const rs=n.relayState!==undefined?n.relayState:n.relay;
     const al=n.alarmState||n.alarm||0;
+    const rw=n.online&&rs===0&&(n.power||0)>RELAY_WARN_W&&(Date.now()-(relayOffAt[n.id]||Date.now()))>SUPERFRAME_MS;
     const faved=isFav(n.id);
-    const fp=`${n.label}|${n.online}|${(n.voltage||0).toFixed(1)}|${(n.current||0).toFixed(2)}|${fP(n.power||0)}|${rs}|${al}|${faved}|${n.rssi}`;
+    const fp=`${n.label}|${n.online}|${(n.voltage||0).toFixed(1)}|${(n.current||0).toFixed(2)}|${fP(n.power||0)}|${rs}|${al}|${rw}|${faved}|${n.rssi}`;
     if(c._fp!==fp){
       c._fp=fp;
       c.classList.toggle('alarm',!!al);
+      c.classList.toggle('relay-warn',rw&&!al);
+      c.classList.toggle('offline',!n.online);
       const bars=rssiToBars(n.rssi||0);
       c.innerHTML=`
         <button class="fav-star ${faved?'faved':''}" onclick="toggleFav(${n.id},event)">${faved?'★':'☆'}</button>
@@ -254,7 +269,7 @@ function renderGrid(ns){
             <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg>
             Nudge
           </button>
-          <span class="nc-relay ${rs?'on':'off'}">Relay: ${rs?'ON':'OFF'}</span>
+          <span class="nc-relay ${rs?'on':'off'}${rw?' warn':''}">Relay: ${rs?'ON':'OFF'}${rw?' ⚠':''}</span>
           <span class="nc-arrow">
             <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="9 18 15 12 9 6"/></svg>
           </span>
@@ -311,17 +326,19 @@ function updateDetail(d){
 
   const rs=d.relayState!==undefined?d.relayState:(d.relay||0);
   const on=rs===1;
+  const rw=d.online&&rs===0&&(d.power||0)>RELAY_WARN_W&&(Date.now()-(relayOffAt[d.id]||Date.now()))>SUPERFRAME_MS;
   $('relayState').textContent=on?'ON':'OFF';
   $('relayState').className='relay-state-val '+(on?'on':'off')+' M';
   $('relayToggle').checked=on;
+  $('relayWarnTag').classList.toggle('show',rw);
+  $('relayStateBox').classList.toggle('warn',rw);
   const rm=d.relayMode||0;
   $('relayMode').textContent=rm===1?'SCHEDULED':'MANUAL';
 
+  if(!d.pending&&pendingCmd[d.id]!==undefined)delete pendingCmd[d.id];
   const pend=d.pending||false;
-  const cmdType=pend?(pendingCmd[d.id]||null):null;
-  $('commitBanner').classList.toggle('show',cmdType==='relay_manual');
-  $('commitBannerSched').classList.toggle('show',cmdType==='relay_sched');
-  $('thrBanner').classList.toggle('show',cmdType==='threshold');
+  const cmdType=pendingCmd[d.id]||null;
+  $('commitBanner').classList.toggle('show',pend&&d.online!==false);
   $('relayTabs').classList.toggle('frozen',pend);
   $('relayInner').classList.toggle('frozen',pend);
 
@@ -365,22 +382,30 @@ function setRelayTab(m){
   $('tabManual').classList.toggle('active',m==='manual');
   $('tabSchedule').classList.toggle('active',m==='schedule');
 }
-function doManual(c){pendingCmd[cNid]='relay_manual';wsSend({cmd:'relay_manual',node:cNid,state:c?1:0});$('commitBanner').classList.add('show');}
+function freezeAllCmds(){
+  $('commitBanner').classList.add('show');
+  $('relayTabs').classList.add('frozen');
+  $('relayInner').classList.add('frozen');
+  $('thrCtrl').classList.add('frozen');
+  const nb=$('detNudge');
+  if(nb){nb.disabled=true;nb.style.opacity='.3';nb.style.pointerEvents='none';}
+}
+function doManual(c){pendingCmd[cNid]='relay_manual';wsSend({cmd:'relay_manual',node:cNid,state:c?1:0});freezeAllCmds();}
 function doSchedule(){
   const sv=$('schedStart').value,ev=$('schedEnd').value;
   if(!sv||!ev){alert('Set both times.');return;}
   const[sh,sm]=sv.split(':').map(Number),[eh,em]=ev.split(':').map(Number);
   pendingCmd[cNid]='relay_sched';
   wsSend({cmd:'relay_schedule',node:cNid,startH:sh,startM:sm,endH:eh,endM:em});
-  $('commitBannerSched').classList.add('show');
+  freezeAllCmds();
 }
-function doClear(){pendingCmd[cNid]='relay_sched';wsSend({cmd:'relay_clear',node:cNid});$('commitBannerSched').classList.add('show');}
+function doClear(){pendingCmd[cNid]='relay_sched';wsSend({cmd:'relay_clear',node:cNid});freezeAllCmds();}
 function doSetThreshold(){
   const v=parseInt($('thrInput').value);
   if(!v||v<1||v>23000){alert('Enter 1–23000 W');return;}
   pendingCmd[cNid]='threshold';
   wsSend({cmd:'set_threshold',node:cNid,watts:v});
-  $('thrBanner').classList.add('show');$('thrCtrl').classList.add('frozen');
+  freezeAllCmds();
 }
 
 /* -- Confirm dialogs --------------------------------------------- */
@@ -492,7 +517,8 @@ function addChartPoint(n){
   const ds=chart.data.datasets[0];
   ds.data.push(v);chart.data.labels.push('');
   if(ds.data.length>120){ds.data.shift();chart.data.labels.shift();}
-  chart.data.labels=ds.data.map((_,i)=>{const s=(ds.data.length-1-i)*3;return s>60?Math.floor(s/60)+'m':s+'s';});
+  const sfS=Math.round(SUPERFRAME_MS/1000);
+  chart.data.labels=ds.data.map((_,i)=>{const s=(ds.data.length-1-i)*sfS;return s>60?Math.floor(s/60)+'m':s+'s';});
   chart.update('none');
 }
 
@@ -502,7 +528,8 @@ async function fetchHistory(id){
     const d=await r.json();
     if(!d.length||!chart)return;
     const mc=MC[cMet];
-    chart.data.labels=d.map((_,i)=>{const s=(d.length-1-i)*3;return s>60?Math.floor(s/60)+'m':s+'s';});
+    const sfS=Math.round(SUPERFRAME_MS/1000);
+    chart.data.labels=d.map((_,i)=>{const s=(d.length-1-i)*sfS;return s>60?Math.floor(s/60)+'m':s+'s';});
     chart.data.datasets[0].data=d.map(x=>x[mc.k]);
     chart.update('none');
   }catch(e){}
