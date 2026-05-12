@@ -70,10 +70,11 @@ struct NodeState {
 
   // Decoded status fields (decoded from statusByte for fast access)
   uint8_t  relayState;          // 0=OFF, 1=ON
-  uint8_t  ruleEngineEnabled;   // 1 = rule engine active on node
+  uint8_t  ruleEngineEnabled;   // 1 = engine active (enabled + has rules)
   uint8_t  relaySource;         // 0=manual,1=protection,2=schedule,3=default
   uint8_t  alarmState;          // 0=OK, 1=ALARM
   uint8_t  protectionLatched;   // 1 = at least one protection rule latched
+  uint8_t  hasAutoRule;         // 1 = rules stored on node (engine may be off)
   uint8_t  ruleCount;           // active rule count echoed from node
 
   // AutoRule storage (gateway caches these for FRAM and dashboard GET)

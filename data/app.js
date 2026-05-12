@@ -177,7 +177,7 @@ function onMsg(m){
   else if(m.type==='time_set'){gwTimeSet=true;if(m.time)gwTime=m.time;updGwTime();}
   else if(m.type==='threshold_ack'){if(!m.success){if(m.node!==undefined)delete pendingCmd[m.node];alert('Threshold command failed');}}
   else if(m.type==='nudge_ack'){if(!m.success){if(m.node!==undefined)delete pendingCmd[m.node];alert('Nudge failed');}}
-  else if(m.type==='relay_ack'||m.type==='schedule_ack'||m.type==='clear_ack'){if(!m.success){if(m.node!==undefined)delete pendingCmd[m.node];alert('Command failed');}}
+  else if(m.type==='relay_ack'||m.type==='auto_ack'){if(!m.success){if(m.node!==undefined)delete pendingCmd[m.node];alert('Command failed');}}
   else if(m.type==='rules_queued'){if(!m.success)alert('Rules delivery failed — check node is online and try again.');}
   else if(m.type==='energy_cleared'){const i=NC.findIndex(x=>x.id===m.node);if(i>=0)NC[i].energy=0;if(cNid===m.node)updateDetail(NC.find(x=>x.id===cNid)||{});}
   else if(m.type==='all_energy_cleared'){NC.forEach(n=>n.energy=0);if(cNid){const c=NC.find(x=>x.id===cNid);if(c)updateDetail(c);}if(!cNid)renderGrid(NC);}
@@ -338,8 +338,9 @@ function updateDetail(d){
   $('relayWarnTag').classList.toggle('show',rw);
   $('relayStateBox').classList.toggle('warn',rw);
   const ruleStatus=d.ruleStatus||{};
-  const srcLabels={manual:'MANUAL',protection:'PROTECTION',schedule:'SCHEDULE',default:'DEFAULT'};
-  $('relayMode').textContent=srcLabels[ruleStatus.relaySource||'manual']||'MANUAL';
+  const autoActive=!!(ruleStatus.engineActive);
+  const hasRules=!!(ruleStatus.hasRules||ruleStatus.count>0);
+  $('relayMode').textContent=autoActive?'AUTO':'MANUAL';
 
   if(!d.pending&&pendingCmd[d.id]!==undefined)delete pendingCmd[d.id];
   const pend=d.pending||false;
@@ -363,14 +364,27 @@ function updateDetail(d){
     else{nb.classList.remove('nudged');nb.innerHTML=NUDGE_ICO+' Nudge';}
   }
 
-  const si=$('schedInfo');
-  if(si)si.className='sched-info M';
-  // Update rule engine status UI
+  // Lock manual toggle when auto mode is active
+  const relayToggle=$('relayToggle');
+  if(relayToggle){
+    relayToggle.disabled=autoActive||off||pend;
+    relayToggle.style.opacity=(autoActive||off||pend)?'.4':'';
+  }
+  const manualHint=$('manualAutoHint');
+  if(manualHint)manualHint.style.display=autoActive?'block':'none';
+
+  // Update auto tab button
+  const autoEnBtn=$('autoEnableBtn'),autoDsBtn=$('autoDisableBtn'),autoNoRules=$('autoNoRulesHint');
+  if(autoEnBtn)autoEnBtn.style.display=(!autoActive&&hasRules&&!off&&!pend)?'block':'none';
+  if(autoDsBtn)autoDsBtn.style.display=(autoActive&&!off&&!pend)?'block':'none';
+  if(autoNoRules)autoNoRules.style.display=(!hasRules&&!off)?'block':'none';
+
+  // Update rule engine status UI in Automation Rules panel
   const reBadge=$('ruleEngineBadge');
   if(reBadge){
     const cnt=ruleStatus.count||0;
     reBadge.textContent=cnt+' rule'+(cnt!==1?'s':'');
-    reBadge.className='panel-badge M '+(ruleStatus.engineActive&&cnt>0?'ac':'');
+    reBadge.className='panel-badge M '+(autoActive?'ac':'');
   }
   const latchBadge=$('ruleLatchedBadge');
   if(latchBadge)latchBadge.style.display=ruleStatus.protectionLatched?'':'none';
@@ -393,7 +407,7 @@ function updateDetail(d){
 function setRelayTab(m){
   document.querySelectorAll('#relayTabs div').forEach(t=>t.classList.toggle('active',t.dataset.mode===m));
   $('tabManual').classList.toggle('active',m==='manual');
-  $('tabSchedule').classList.toggle('active',m==='schedule');
+  $('tabAuto').classList.toggle('active',m==='auto');
 }
 function freezeAllCmds(){
   $('commitBanner').classList.add('show');
@@ -404,15 +418,18 @@ function freezeAllCmds(){
   if(nb){nb.disabled=true;nb.style.opacity='.3';nb.style.pointerEvents='none';}
 }
 function doManual(c){pendingCmd[cNid]='relay_manual';wsSend({cmd:'relay_manual',node:cNid,state:c?1:0});freezeAllCmds();}
-function doSchedule(){
-  const sv=$('schedStart').value,ev=$('schedEnd').value;
-  if(!sv||!ev){alert('Set both times.');return;}
-  const[sh,sm]=sv.split(':').map(Number),[eh,em]=ev.split(':').map(Number);
-  pendingCmd[cNid]='relay_sched';
-  wsSend({cmd:'relay_schedule',node:cNid,startH:sh,startM:sm,endH:eh,endM:em});
+function doEnableAuto(){
+  if(!cNid)return;
+  pendingCmd[cNid]='auto';
+  wsSend({cmd:'auto_enable',node:cNid});
   freezeAllCmds();
 }
-function doClear(){pendingCmd[cNid]='relay_sched';wsSend({cmd:'relay_clear',node:cNid});freezeAllCmds();}
+function doDisableAuto(){
+  if(!cNid)return;
+  pendingCmd[cNid]='auto';
+  wsSend({cmd:'auto_disable',node:cNid});
+  freezeAllCmds();
+}
 function doSetThreshold(){
   const v=parseInt($('thrInput').value);
   if(!v||v<1||v>23000){alert('Enter 1–23000 W');return;}

@@ -145,12 +145,13 @@ static void processUplink(uint8_t slotIdx, const TelemetryPacket& pkt, int16_t r
   ns->lastSeen   = millis();
   ns->missedSfs  = 0;
 
-  // Decode status byte (new AutoRule layout)
+  // Decode status byte (AutoRule layout)
   ns->relayState        = decodeRelayState       (pkt.statusByte);
-  ns->ruleEngineEnabled = decodeRuleEngineEnabled(pkt.statusByte);
+  ns->ruleEngineEnabled = decodeRuleEngineActive (pkt.statusByte);
   ns->relaySource       = decodeRelaySource      (pkt.statusByte);
   ns->alarmState        = decodeAlarmState       (pkt.statusByte);
   ns->protectionLatched = decodeProtectionLatched(pkt.statusByte);
+  ns->hasAutoRule       = decodeHasAutoRule      (pkt.statusByte);
   ns->ruleCount         = pkt.ruleCount;
   ns->fwVersion         = pkt.fwVersion;
   ns->beaconRSSI        = pkt.beaconRSSI;
@@ -166,8 +167,14 @@ static void processUplink(uint8_t slotIdx, const TelemetryPacket& pkt, int16_t r
       confirmed = (ns->relayState == ns->queuedCmd.data[2]);
     } else if (ns->queuedCmd.len >= 2 && ns->queuedCmd.data[0] == PKT_RELAY_CLEAR) {
       confirmed = (ns->ruleCount == 0 && !ns->ruleEngineEnabled);
+    } else if (ns->queuedCmd.len >= 3 && ns->queuedCmd.data[0] == PKT_SET_RULE &&
+               ns->queuedCmd.data[2] == 0xFC) {
+      confirmed = (ns->ruleEngineEnabled == 1);
+    } else if (ns->queuedCmd.len >= 3 && ns->queuedCmd.data[0] == PKT_SET_RULE &&
+               ns->queuedCmd.data[2] == 0xFD) {
+      confirmed = (ns->ruleEngineEnabled == 0);
     } else {
-      // Threshold, nudge, schedule: any UL after TX is sufficient confirmation.
+      // Threshold, nudge: any UL after TX is sufficient confirmation.
       confirmed = true;
     }
     if (confirmed) ns->pending = false;
@@ -517,7 +524,7 @@ void gatewayTdmaTaskStart() {
 }
 
 bool tdmaQueueCommand(uint8_t slotIdx, const uint8_t* data, uint8_t len) {
-  if (slotIdx >= MAX_NODES || len == 0 || len > 8) return false;
+  if (slotIdx >= MAX_NODES || len == 0 || len > sizeof(g_nodes[0].queuedCmd.data)) return false;
 
   bool ok = false;
   if (xSemaphoreTake(g_nodesMutex, pdMS_TO_TICKS(20)) == pdTRUE) {

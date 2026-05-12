@@ -446,7 +446,7 @@
             <div id="relayCtrl">
               <div class="tab-row M" id="relayTabs">
                 <div class="active" data-mode="manual" onclick="setRelayTab('manual')">Manual</div>
-                <div data-mode="schedule" onclick="setRelayTab('schedule')">Schedule</div>
+                <div data-mode="auto" onclick="setRelayTab('auto')">Auto</div>
               </div>
               <div id="relayInner">
                 <!-- Manual -->
@@ -454,22 +454,19 @@
                   <div style="display:flex;align-items:center;justify-content:flex-end">
                     <label class="tgl"><input type="checkbox" id="relayToggle" onchange="doManual(this.checked)"><div class="ts"></div></label>
                   </div>
+                  <div id="manualAutoHint" style="display:none;font-size:10px;color:var(--txd);font-family:'JetBrains Mono',monospace;margin-top:4px;text-align:right">Auto is active — disable Auto first</div>
                 </div>
-                <!-- Schedule -->
-                <div class="tab-pane" id="tabSchedule">
-                  <div class="sched-info M" id="schedInfo"></div>
-                  <div class="form-group">
-                    <label class="form-label">Turn ON at</label>
-                    <input type="time" class="form-input M" id="schedStart" value="08:00">
+                <!-- Auto -->
+                <div class="tab-pane" id="tabAuto">
+                  <div id="autoNoRulesHint" style="display:none;font-size:10px;color:var(--txd);font-family:'JetBrains Mono',monospace;line-height:1.6;padding:4px 0">
+                    No rules configured.<br>Use the <strong>Automation Rules</strong> panel below to set up rules, then enable Auto here.
                   </div>
-                  <div class="form-group">
-                    <label class="form-label">Turn OFF at</label>
-                    <input type="time" class="form-input M" id="schedEnd" value="17:00">
-                  </div>
-                  <div style="font-size:10px;color:var(--txd);margin-top:6px;font-family:'JetBrains Mono',monospace">Repeats daily. Overnight wrap supported.</div>
-                  <button class="btn btn-primary" onclick="doSchedule()">
-                    <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="18" rx="2" ry="2"/><line x1="16" y1="2" x2="16" y2="6"/><line x1="8" y1="2" x2="8" y2="6"/><line x1="3" y1="10" x2="21" y2="10"/></svg>
-                    Set Daily Schedule
+                  <button id="autoEnableBtn" class="btn btn-primary M" style="display:none;width:100%;margin-top:6px;font-size:11px" onclick="doEnableAuto()">
+                    <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" style="margin-right:4px"><circle cx="12" cy="12" r="10"/><polyline points="12 8 12 12 14 14"/></svg>
+                    Enable Auto
+                  </button>
+                  <button id="autoDisableBtn" class="btn btn-ghost M" style="display:none;width:100%;margin-top:6px;font-size:11px" onclick="doDisableAuto()">
+                    Disable Auto (switch to Manual)
                   </button>
                 </div>
               </div>

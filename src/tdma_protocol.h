@@ -142,12 +142,13 @@ static_assert(sizeof(BeaconPacket) == 8, "BeaconPacket must be 8 bytes");
  * TelemetryPacket (32 bytes) — node uplink every superframe.
  *
  * statusByte layout (AutoRule firmware):
- *   bit 0   : relayState        (0=OFF, 1=ON)
- *   bit 1   : ruleEngineEnabled (1 = rules loaded and evaluating)
- *   bits 3:2: relaySource       (0=manual, 1=protection, 2=schedule, 3=default)
- *   bit 4   : alarmState        (0=OK, 1=ALARM — power > alarmThreshold)
+ *   bit 0   : relayState       (0=OFF, 1=ON)
+ *   bit 1   : ruleEngineActive (1 = engine enabled AND has rules; "auto mode on")
+ *   bits 3:2: relaySource      (0=manual, 1=protection, 2=schedule, 3=default)
+ *   bit 4   : alarmState       (0=OK, 1=ALARM — power > alarmThreshold)
  *   bit 5   : protectionLatched (1 = at least one protection rule is latched)
- *   bits 7:6: reserved
+ *   bit 6   : hasAutoRule      (1 = rules stored, engine may be disabled)
+ *   bit 7   : reserved
  *
  * ruleCount: number of active AutoRules on the node (0-8).
  *   Carried in the schedSH field (formerly "Schedule start hour").
@@ -269,26 +270,30 @@ struct JoinAckPacket {
 //
 // Layout:
 //   bit 0   relayState        (0=OFF, 1=ON)
-//   bit 1   ruleEngineEnabled (1 = rules loaded and evaluating)
+//   bit 1   ruleEngineActive  (1 = engine enabled AND has rules — "auto mode on")
 //   bits 3:2 relaySource      (0=manual, 1=protection, 2=schedule, 3=default)
 //   bit 4   alarmState        (0=OK, 1=ALARM)
 //   bit 5   protectionLatched (1 = at least one protection rule latched)
-//   bits 7:6 reserved
+//   bit 6   hasAutoRule       (1 = rules stored, engine may be off)
+//   bit 7   reserved
 // -----------------------------------------------------------------------------
-inline uint8_t encodeStatus(uint8_t relayState, uint8_t ruleEngineEnabled,
+inline uint8_t encodeStatus(uint8_t relayState, uint8_t ruleEngineActive,
                               uint8_t relaySource, uint8_t alarmState,
-                              uint8_t protectionLatched) {
-  return ((protectionLatched  & 0x01) << 5) |
+                              uint8_t protectionLatched, uint8_t hasAutoRule) {
+  return ((hasAutoRule        & 0x01) << 6) |
+          ((protectionLatched & 0x01) << 5) |
           ((alarmState        & 0x01) << 4) |
           ((relaySource       & 0x03) << 2) |
-          ((ruleEngineEnabled & 0x01) << 1) |
+          ((ruleEngineActive  & 0x01) << 1) |
           (relayState & 0x01);
 }
 inline uint8_t decodeRelayState       (uint8_t s) { return  s        & 0x01; }
-inline uint8_t decodeRuleEngineEnabled(uint8_t s) { return (s >> 1)  & 0x01; }
+inline uint8_t decodeRuleEngineEnabled(uint8_t s) { return (s >> 1)  & 0x01; } // kept for compat
+inline uint8_t decodeRuleEngineActive (uint8_t s) { return (s >> 1)  & 0x01; }
 inline uint8_t decodeRelaySource      (uint8_t s) { return (s >> 2)  & 0x03; }
 inline uint8_t decodeAlarmState       (uint8_t s) { return (s >> 4)  & 0x01; }
 inline uint8_t decodeProtectionLatched(uint8_t s) { return (s >> 5)  & 0x01; }
+inline uint8_t decodeHasAutoRule      (uint8_t s) { return (s >> 6)  & 0x01; }
 
 // -----------------------------------------------------------------------------
 // Hop sequence

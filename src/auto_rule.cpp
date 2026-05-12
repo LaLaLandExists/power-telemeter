@@ -22,8 +22,9 @@
 #include <string.h>
 
 // --- Active rule set (written on COMMIT, read by evaluator) ------------------
-static AutoRule  s_rules[AUTORULE_MAX];
-static uint8_t   s_ruleCount   = 0;
+static AutoRule         s_rules[AUTORULE_MAX];
+static uint8_t          s_ruleCount         = 0;
+static volatile bool    s_ruleEngineEnabled = false; // persisted via NVS key "active"
 
 // --- Per-rule runtime state --------------------------------------------------
 static RuleState s_state[AUTORULE_MAX];
@@ -53,8 +54,9 @@ void ruleNvsLoad() {
   Preferences prefs;
   if (!prefs.begin(NVS_NS, true)) return;   // read-only
 
-  s_ruleCount = prefs.getUChar("count", 0);
+  s_ruleCount         = prefs.getUChar("count", 0);
   if (s_ruleCount > AUTORULE_MAX) s_ruleCount = 0;
+  s_ruleEngineEnabled = prefs.getBool("active", false);
 
   char key[4];
   for (uint8_t i = 0; i < s_ruleCount; i++) {
@@ -63,14 +65,16 @@ void ruleNvsLoad() {
   }
   prefs.end();
 
-  logAsync("[NODE-RULE] Loaded %d rules from NVS\n", s_ruleCount);
+  logAsync("[NODE-RULE] Loaded %d rules from NVS (engine=%s)\n",
+           s_ruleCount, s_ruleEngineEnabled ? "ON" : "OFF");
 }
 
 void ruleNvsSave() {
   Preferences prefs;
   if (!prefs.begin(NVS_NS, false)) return;  // read-write
 
-  prefs.putUChar("count", s_ruleCount);
+  prefs.putUChar("count",  s_ruleCount);
+  prefs.putBool ("active", s_ruleEngineEnabled);
   char key[4];
   for (uint8_t i = 0; i < AUTORULE_MAX; i++) {
     snprintf(key, sizeof(key), "r%d", i);
@@ -81,6 +85,15 @@ void ruleNvsSave() {
     }
   }
   prefs.end();
+}
+
+void ruleSetEnabled(bool enable) {
+  s_ruleEngineEnabled = enable;
+  Preferences prefs;
+  if (prefs.begin(NVS_NS, false)) {
+    prefs.putBool("active", enable);
+    prefs.end();
+  }
 }
 
 void ruleNvsLoadState() {
@@ -290,23 +303,39 @@ bool handleRulePacket(const uint8_t* buf, uint8_t len) {
 
   uint8_t ruleIndex = buf[0];
 
+  if (ruleIndex == 0xFC) {
+    // ENABLE: activate engine without modifying stored rules
+    ruleSetEnabled(true);
+    logAsync("[NODE-RULE] Engine ENABLED (rules preserved, count=%d)\n", s_ruleCount);
+    return true;
+  }
+
+  if (ruleIndex == 0xFD) {
+    // DISABLE: pause engine without clearing rules
+    ruleSetEnabled(false);
+    logAsync("[NODE-RULE] Engine DISABLED (rules preserved, count=%d)\n", s_ruleCount);
+    return true;
+  }
+
   if (ruleIndex == 0xFE) {
-    // CLEAR: wipe staging buffer and active rules, drive relay OFF
+    // CLEAR: wipe staging buffer and active rules, disable engine, drive relay OFF
     memset(s_staging, 0, sizeof(s_staging));
     s_stagingCount = 0;
     memset(s_state,  0, sizeof(s_state));
     s_ruleCount = 0;
+    ruleSetEnabled(false);
     setRelay(0);
     logAsync("[NODE-RULE] CLEAR received — rules wiped, relay OFF\n");
     return true;
   }
 
   if (ruleIndex == 0xFF) {
-    // COMMIT: copy staging → active, persist to NVS, begin evaluation
+    // COMMIT: copy staging → active, enable engine, persist to NVS
     memcpy(s_rules, s_staging, sizeof(AutoRule) * s_stagingCount);
     s_ruleCount = s_stagingCount;
+    ruleSetEnabled(true);
     ruleNvsSave();
-    logAsync("[NODE-RULE] COMMIT — %d rules active\n", s_ruleCount);
+    logAsync("[NODE-RULE] COMMIT — %d rules active, engine ON\n", s_ruleCount);
     return true;
   }
 
@@ -336,7 +365,8 @@ bool handleRulePacket(const uint8_t* buf, uint8_t len) {
 // -----------------------------------------------------------------------------
 // Status accessors
 // -----------------------------------------------------------------------------
-uint8_t    ruleGetCount()          { return s_ruleCount; }
-bool       ruleEngineEnabled()     { return s_ruleCount > 0; }
-bool       ruleProtectionLatched() { return s_anyLatched; }
-RelaySource ruleLastSource()       { return s_lastSource; }
+uint8_t     ruleGetCount()          { return s_ruleCount; }
+bool        ruleIsActive()          { return s_ruleEngineEnabled && s_ruleCount > 0; }
+bool        ruleHasRules()          { return s_ruleCount > 0; }
+bool        ruleProtectionLatched() { return s_anyLatched; }
+RelaySource ruleLastSource()        { return s_lastSource; }

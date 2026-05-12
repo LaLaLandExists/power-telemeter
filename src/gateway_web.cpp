@@ -17,11 +17,11 @@
  *   GET  /api/status
  *
  * WebSocket ws://<ip>/ws
- *   Commands: relay_manual, relay_schedule, relay_clear, set_threshold,
+ *   Commands: relay_manual, auto_enable, auto_disable, set_threshold,
  *             nudge, rename, set_time, clear_energy, clear_all_energy,
  *             get_nodes, set_rules
- *   Push:     telemetry, nodes, name_changed, time_set, relay_ack, schedule_ack,
- *             clear_ack, threshold_ack, nudge_ack, energy_cleared,
+ *   Push:     telemetry, nodes, name_changed, time_set, relay_ack, auto_ack,
+ *             threshold_ack, nudge_ack, energy_cleared,
  *             all_energy_cleared, rules_queued
  */
 
@@ -85,6 +85,7 @@ static void nodeToSummaryJson(JsonObject obj, const NodeState &ns)
   JsonObject ruleStatus = obj["ruleStatus"].to<JsonObject>();
   ruleStatus["count"]              = ns.ruleCount;
   ruleStatus["engineActive"]       = (bool)ns.ruleEngineEnabled;
+  ruleStatus["hasRules"]           = (bool)ns.hasAutoRule;
   ruleStatus["protectionLatched"]  = (bool)ns.protectionLatched;
   ruleStatus["relaySource"]        = sourceNames[ns.relaySource & 0x03];
   ruleStatus["deliveryActive"]     = ns.ruleDelivery.active;
@@ -256,42 +257,43 @@ static void handleWsMessage(AsyncWebSocketClient *client, const String &payload)
     return;
   }
 
-  // -- relay_schedule -------------------------------------------------------
-  if (strcmp(cmd, "relay_schedule") == 0)
+  // -- auto_enable -----------------------------------------------------------
+  // Activates the rule engine on the node (rules must already be stored).
+  // Sends PKT_SET_RULE with ruleIndex=0xFC (enable without clearing rules).
+  if (strcmp(cmd, "auto_enable") == 0)
   {
-    uint8_t startH = (uint8_t)(doc["startH"] | 0);
-    uint8_t startM = (uint8_t)(doc["startM"] | 0);
-    uint8_t endH = (uint8_t)(doc["endH"] | 0);
-    uint8_t endM = (uint8_t)(doc["endM"] | 0);
     uint8_t idx = tdmaFindSlotByNodeId(nodeId);
     bool ok = false;
     if (idx != 0xFF)
     {
-      uint8_t pkt[7] = {PKT_RELAY_SCHEDULE, nodeId, 1,
-                        startH, startM, endH, endM};
-      ok = tdmaQueueCommand(idx, pkt, 7);
+      uint8_t pkt[9] = {PKT_SET_RULE, nodeId, 0xFC, 0, 0, 0, 0, 0, 0};
+      ok = tdmaQueueCommand(idx, pkt, 9);
     }
     JsonDocument ack;
-    ack["type"] = "schedule_ack";
-    ack["node"] = nodeId;
+    ack["type"]    = "auto_ack";
+    ack["node"]    = nodeId;
+    ack["enabled"] = true;
     ack["success"] = ok;
     wsSendToClient(client, ack);
     return;
   }
 
-  // -- relay_clear -----------------------------------------------------------
-  if (strcmp(cmd, "relay_clear") == 0)
+  // -- auto_disable ----------------------------------------------------------
+  // Pauses the rule engine (rules remain stored; relay reverts to manual).
+  // Sends PKT_SET_RULE with ruleIndex=0xFD (disable without clearing rules).
+  if (strcmp(cmd, "auto_disable") == 0)
   {
     uint8_t idx = tdmaFindSlotByNodeId(nodeId);
     bool ok = false;
     if (idx != 0xFF)
     {
-      uint8_t pkt[2] = {PKT_RELAY_CLEAR, nodeId};
-      ok = tdmaQueueCommand(idx, pkt, 2);
+      uint8_t pkt[9] = {PKT_SET_RULE, nodeId, 0xFD, 0, 0, 0, 0, 0, 0};
+      ok = tdmaQueueCommand(idx, pkt, 9);
     }
     JsonDocument ack;
-    ack["type"] = "clear_ack";
-    ack["node"] = nodeId;
+    ack["type"]    = "auto_ack";
+    ack["node"]    = nodeId;
+    ack["enabled"] = false;
     ack["success"] = ok;
     wsSendToClient(client, ack);
     return;

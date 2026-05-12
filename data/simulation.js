@@ -16,7 +16,7 @@ const SIM_PROFILES = [
 const SIM_TICK_MS  = 3000;
 const SIM_HIST_LEN = 120;
 
-const SIM_RULE_STATUS_DEFAULT = {count:0, engineActive:false, protectionLatched:false, relaySource:'manual', deliveryActive:false};
+const SIM_RULE_STATUS_DEFAULT = {count:0, engineActive:false, hasRules:false, protectionLatched:false, relaySource:'manual', deliveryActive:false};
 
 const simState = SIM_PROFILES.map(p => ({
   ...p,
@@ -134,32 +134,41 @@ wsSend = function(cmd){
       s.pending=true; renderGrid(NC);
       setTimeout(()=>{
         s.relayState=cmd.state;
-        s.ruleStatus={...SIM_RULE_STATUS_DEFAULT, relaySource:'manual'};
+        const prevCnt=(s.ruleStatus&&s.ruleStatus.count)||0;
+        s.ruleStatus={...SIM_RULE_STATUS_DEFAULT,count:prevCnt,hasRules:prevCnt>0,relaySource:'manual'};
         s.pending=false;
         if(cNid===cmd.node){$('commitBanner').classList.remove('show');updateDetail(nodeSnapshot(s));}
         renderGrid(NC);
       }, 600+Math.random()*400); break;
     }
-    case 'relay_schedule':{
-      // Legacy schedule command — simulated as a 2-rule delivery (DEFAULT OFF + SCHEDULE)
+    case 'auto_enable':{
       const s=simState.find(x=>x.id===cmd.node); if(!s)break;
       s.pending=true;
       setTimeout(()=>{
+        const rs=s.ruleStatus||{...SIM_RULE_STATUS_DEFAULT};
+        const cnt=rs.count||0;
         const now=new Date(); const nm=now.getHours()*60+now.getMinutes();
-        const on=cmd.startH*60+cmd.startM; const off=cmd.endH*60+cmd.endM;
-        const inW=on<off?(nm>=on&&nm<off):(nm>=on||nm<off);
-        s.relayState=inW?1:0;
-        s.ruleStatus={count:2,engineActive:true,protectionLatched:false,relaySource:inW?'schedule':'default',deliveryActive:false};
+        const rules=currentRules[cmd.node]||[];
+        const schedRule=rules.find(r=>r.type==='schedule'&&r.enabled!==false);
+        let source='default';
+        if(schedRule){
+          const inW=schedRule.onTime<schedRule.offTime
+            ?(nm>=schedRule.onTime&&nm<schedRule.offTime)
+            :(nm>=schedRule.onTime||nm<schedRule.offTime);
+          source=inW?'schedule':'default';
+        }
+        s.ruleStatus={count:cnt,engineActive:cnt>0,hasRules:cnt>0,protectionLatched:false,relaySource:cnt>0?source:'manual',deliveryActive:false};
         s.pending=false;
         if(cNid===cmd.node){$('commitBanner').classList.remove('show');updateDetail(nodeSnapshot(s));}
         renderGrid(NC);
       },700+Math.random()*300); break;
     }
-    case 'relay_clear':{
+    case 'auto_disable':{
       const s=simState.find(x=>x.id===cmd.node); if(!s)break;
       s.pending=true;
       setTimeout(()=>{
-        s.ruleStatus={...SIM_RULE_STATUS_DEFAULT};
+        const cnt=(s.ruleStatus&&s.ruleStatus.count)||0;
+        s.ruleStatus={...SIM_RULE_STATUS_DEFAULT,count:cnt,hasRules:cnt>0};
         s.pending=false;
         if(cNid===cmd.node){$('commitBanner').classList.remove('show');updateDetail(nodeSnapshot(s));}
         renderGrid(NC);
@@ -183,7 +192,7 @@ wsSend = function(cmd){
             :(nm>=schedRule.onTime||nm<schedRule.offTime);
           source=inW?'schedule':'default';
         }
-        s.ruleStatus={count,engineActive:count>0,protectionLatched:false,relaySource:source,deliveryActive:false};
+        s.ruleStatus={count,engineActive:count>0,hasRules:count>0,protectionLatched:false,relaySource:source,deliveryActive:false};
         s.pending=false;
         currentRules[cmd.node]=rules;
         if(cNid===cmd.node){

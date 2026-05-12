@@ -353,10 +353,11 @@ static void transmitTelemetry(uint16_t sfCount) {
   pkt.uid        = g_nodeUID;
   pkt.statusByte = encodeStatus(
       g_relayState,
-      ruleEngineEnabled()     ? 1u : 0u,
+      ruleIsActive()          ? 1u : 0u,
       (uint8_t)ruleLastSource(),
       alarmState,
-      ruleProtectionLatched() ? 1u : 0u);
+      ruleProtectionLatched() ? 1u : 0u,
+      ruleHasRules()          ? 1u : 0u);
   pkt.ruleCount  = ruleGetCount();
   pkt._rsvd0     = 0;
   pkt._rsvd1     = 0;
@@ -695,7 +696,7 @@ static void pzemTask(void* /*params*/) {
     // -- AutoRule evaluation -------------------------------------------------
     // Build a PzemSnapshot from the current g_pzem values (scaled integers).
     // Runs every 500 ms — same cadence as the PZEM read.
-    if (ruleEngineEnabled()) {
+    if (ruleIsActive()) {
       PzemSnapshot snap = {};
       if (xSemaphoreTake(g_pzemMutex, pdMS_TO_TICKS(20)) == pdTRUE) {
         snap.voltage     = (uint16_t)(g_pzem.voltage     * 10.0f);

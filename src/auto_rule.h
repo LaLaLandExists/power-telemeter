@@ -14,6 +14,10 @@
  * Delivery: rules arrive over TDMA via DlRulePacket (PKT_SET_RULE = 0x08).
  * The gateway sends: CLEAR (0xFE) → rule 0 → … → rule N-1 → COMMIT (0xFF).
  * Rules take effect atomically on COMMIT and are persisted to NVS.
+ *
+ * Engine enable/disable (without clearing rules):
+ *   0xFC  — Enable  engine (auto mode ON,  rules preserved)
+ *   0xFD  — Disable engine (auto mode OFF, rules preserved)
  */
 #pragma once
 #include <stdint.h>
@@ -168,9 +172,24 @@ bool handleRulePacket(const uint8_t* buf, uint8_t len);
 uint8_t ruleGetCount();
 
 /**
- * Return whether the rule engine is loaded and has at least one rule.
+ * Return true when the engine is explicitly enabled AND at least one rule is
+ * stored.  Used to gate evaluation in pzemTask and to encode bit 1 of
+ * statusByte ("auto mode active").
  */
-bool ruleEngineEnabled();
+bool ruleIsActive();
+
+/**
+ * Return true if at least one rule is stored, regardless of whether the
+ * engine is enabled.  Encoded as bit 6 of statusByte ("has auto rules").
+ */
+bool ruleHasRules();
+
+/**
+ * Enable or disable the rule engine without modifying stored rules.
+ * Persists the new state to NVS key "active" in namespace "rules".
+ * Called on COMMIT (enable), CLEAR (disable), 0xFC (enable), 0xFD (disable).
+ */
+void ruleSetEnabled(bool enable);
 
 /**
  * Return true if at least one protection rule is currently latched.
