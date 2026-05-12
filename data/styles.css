@@ -405,7 +405,11 @@ body::before{
 /* -- Rule builder rows ----------------------------------------- */
 .rule-row{
   display:flex;align-items:center;gap:4px;flex-wrap:nowrap;
-  margin-bottom:4px;
+  margin-bottom:0;padding-bottom:8px;
+}
+.rule-row:not(:last-child){
+  border-bottom:1px solid var(--bd);
+  margin-bottom:8px;
 }
 .rule-row .form-input{padding:3px 4px;font-size:10px}
 .rule-row .thr-input{padding:3px 4px;font-size:10px;height:28px}
