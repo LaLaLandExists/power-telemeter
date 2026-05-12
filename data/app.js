@@ -1239,15 +1239,22 @@ function renderRuleProtList(){
   el.innerHTML='';
   builderProts.forEach((p,i)=>{
     const row=document.createElement('div');row.className='rule-row M';
+    row.style.cssText='flex-direction:column;align-items:stretch;gap:4px';
     const fOpts=RULE_FIELD_LABELS.map((f,fi)=>`<option value="${fi}"${fi===p.field?' selected':''}>${f}</option>`).join('');
     const oOpts=RULE_OPS.map(o=>`<option value="${o.v}"${o.v===p.op?' selected':''}>${o.l}</option>`).join('');
+    // Line 1: field (full width) + operator (fixed)
+    // Line 2: threshold + arrow + action + delete
     row.innerHTML=
-      `<select class="form-input M" style="flex:1;min-width:0;margin:0;padding:4px" onchange="builderProts[${i}].field=parseInt(this.value)">${fOpts}</select>`+
-      `<select class="form-input M" style="width:54px;flex-shrink:0;margin:0;padding:4px" onchange="builderProts[${i}].op=parseInt(this.value)">${oOpts}</select>`+
-      `<input type="number" class="thr-input M" value="${p.threshold}" style="width:60px;flex-shrink:0;margin:0" oninput="builderProts[${i}].threshold=parseInt(this.value)||0" placeholder="Thr">`+
-      `<span style="color:var(--txd);padding:0 2px;flex-shrink:0">→</span>`+
-      `<select class="form-input M" style="width:46px;flex-shrink:0;margin:0;padding:4px" onchange="builderProts[${i}].action=this.value"><option value="off"${p.action==='off'?' selected':''}>OFF</option><option value="on"${p.action==='on'?' selected':''}>ON</option></select>`+
-      `<button style="padding:2px 8px;font-size:12px;flex-shrink:0;background:rgba(255,56,96,.08);border:1px solid rgba(255,56,96,.25);border-radius:5px;cursor:pointer;color:var(--dg)" onclick="builderProts.splice(${i},1);renderRuleProtList()">×</button>`;
+      `<div style="display:flex;gap:4px">`+
+        `<select class="form-input M" style="flex:1;min-width:0;margin:0;padding:4px" onchange="builderProts[${i}].field=parseInt(this.value)">${fOpts}</select>`+
+        `<select class="form-input M" style="width:62px;flex-shrink:0;margin:0;padding:4px" onchange="builderProts[${i}].op=parseInt(this.value)">${oOpts}</select>`+
+      `</div>`+
+      `<div style="display:flex;gap:4px;align-items:center">`+
+        `<input type="number" class="thr-input M" value="${p.threshold}" style="flex:1;min-width:0;margin:0" oninput="builderProts[${i}].threshold=parseInt(this.value)||0" placeholder="Threshold">`+
+        `<span style="color:var(--txd);padding:0 2px;flex-shrink:0">→</span>`+
+        `<select class="form-input M" style="width:52px;flex-shrink:0;margin:0;padding:4px" onchange="builderProts[${i}].action=this.value"><option value="off"${p.action==='off'?' selected':''}>OFF</option><option value="on"${p.action==='on'?' selected':''}>ON</option></select>`+
+        `<button style="padding:2px 8px;font-size:12px;flex-shrink:0;background:rgba(255,56,96,.08);border:1px solid rgba(255,56,96,.25);border-radius:5px;cursor:pointer;color:var(--dg)" onclick="builderProts.splice(${i},1);renderRuleProtList()">×</button>`+
+      `</div>`;
     el.appendChild(row);
   });
 }
