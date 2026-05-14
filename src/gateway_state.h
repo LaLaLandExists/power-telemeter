@@ -60,6 +60,7 @@ struct NodeState {
   // Pending command tracking
   bool     pending;           // True while awaiting confirmation from node
   uint32_t pendingSentAt;     // millis() when command was sent
+  uint8_t  pendingRetry;      // Number of retransmissions attempted so far
   PendingCmd queuedCmd;       // Command to send in next DL slot
 
   // History buffer

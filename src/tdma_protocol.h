@@ -164,7 +164,10 @@ struct TelemetryPacket {
   uint8_t  schedEH;          // Schedule end hour
   uint8_t  schedEM;          // Schedule end minute
   uint16_t alarmThreshold;   // watts
-  uint8_t  seqCounter;       // Rolling 0–255, for packet-loss detection
+  // seqCounter wire layout:
+  //   bit  7   : dlAck — set by node when a DL packet was decoded this superframe (one-shot, cleared after TX)
+  //   bits 6:0 : rolling counter 0–127, increments every UL, for packet-loss detection
+  uint8_t  seqCounter;
   uint8_t  beaconRSSI;       // int8 cast to uint8 — RSSI of last beacon (dBm)
   uint8_t  fwVersion;        // Firmware version
 };
@@ -177,6 +180,10 @@ static_assert(sizeof(TelemetryPacket) == 32, "TelemetryPacket must be 32 bytes")
  * bcn.epoch != s_joinEpoch the node re-contends before the next data slot,
  * so a stale node can never occupy a slot belonging to another device.
  * The UID fields previously in this header are no longer needed.
+ *
+ * IMPORTANT: All DL command types MUST be absolute (set-to-value), never
+ * relative (toggle/increment). The gateway retransmits unacknowledged commands
+ * up to MAX_DL_RETRIES times; a relative command retried would double its effect.
  */
 struct DlHeader {
   uint8_t pktType;

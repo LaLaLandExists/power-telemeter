@@ -67,6 +67,7 @@ uint32_t g_rtcBaseMs  = 0;
 bool     g_rtcSet     = false;
 
 static uint8_t g_seqCounter       = 0;
+static bool    s_dlAck            = false; // set when a DL is decoded; packed into seqCounter[7] on next UL
 static int8_t  g_beaconRSSI       = -128;
 static uint8_t s_joinEpoch        = 0xFF; // epoch captured at last successful JoinAck
 static uint8_t s_lastBeaconEpoch  = 0xFF; // epoch from most recently received beacon
@@ -313,8 +314,9 @@ static void handleDownlink(const uint8_t* buf, int16_t len) {
 
   default:
     logAsync("[NODE-DL] Unknown packet type 0x%02X\n", type);
-    break;
+    return; // unknown — do not set dlAck
   }
+  s_dlAck = true;
 }
 
 // -----------------------------------------------------------------------------
@@ -368,7 +370,9 @@ static void transmitTelemetry(uint16_t sfCount) {
   pkt.schedSM    = g_schedSM;
   pkt.schedEH    = g_schedEH;
   pkt.schedEM    = g_schedEM;
-  pkt.seqCounter = ++g_seqCounter;
+  // seqCounter[7] = dlAck (one-shot; cleared after this TX); [6:0] = rolling counter
+  pkt.seqCounter = (s_dlAck ? 0x80u : 0x00u) | (++g_seqCounter & 0x7Fu);
+  s_dlAck = false;
   pkt.beaconRSSI = (uint8_t)(int8_t)g_beaconRSSI;
   pkt.fwVersion  = FW_VERSION;
 

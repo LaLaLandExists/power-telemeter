@@ -152,31 +152,42 @@ static void processUplink(uint8_t slotIdx, const TelemetryPacket& pkt, int16_t r
   ns->alarmState = decodeAlarmState(pkt.statusByte);
   ns->fwVersion  = pkt.fwVersion;
   ns->beaconRSSI = pkt.beaconRSSI;
-  ns->seqLast    = pkt.seqCounter;
+  // seqCounter[7] = dlAck (node decoded a DL this superframe); [6:0] = rolling counter
+  bool dlAck     = (pkt.seqCounter & 0x80) != 0;
+  ns->seqLast    = pkt.seqCounter & 0x7F;
 
   accumulateEnergy(ns, pkt.energy);
   addHistory(ns, pkt);
 
-  // Resolve pending flag: check if node state matches what was commanded
+  // Confirm pending if the node explicitly ACKed the DL this superframe.
+  // Belt-and-suspenders: also confirm relay/schedule/clear via state match in case
+  // the node is running old firmware without the dlAck bit.
+#define MAX_DL_RETRIES 3
   if (ns->pending) {
-    bool confirmed = false;
-    if (ns->queuedCmd.len >= 3 && ns->queuedCmd.data[0] == PKT_RELAY_MANUAL) {
-      confirmed = (ns->relayState == ns->queuedCmd.data[2]);
-    } else if (ns->queuedCmd.len >= 7 && ns->queuedCmd.data[0] == PKT_RELAY_SCHEDULE) {
-      confirmed = (ns->relayMode == 1 && ns->schedState > 0);
-    } else if (ns->queuedCmd.len >= 2 && ns->queuedCmd.data[0] == PKT_RELAY_CLEAR) {
-      confirmed = (ns->relayMode == 0 && ns->schedState == 0);
-    } else {
-      // Nudge and threshold have nothing to echo in the status byte.
-      // The DL was already transmitted; receiving any UL means the node
-      // processed its slot and applied the command — clear immediately.
-      confirmed = true;
+    bool confirmed = dlAck;
+    if (!confirmed) {
+      if (ns->queuedCmd.len >= 3 && ns->queuedCmd.data[0] == PKT_RELAY_MANUAL)
+        confirmed = (ns->relayState == ns->queuedCmd.data[2]);
+      else if (ns->queuedCmd.len >= 7 && ns->queuedCmd.data[0] == PKT_RELAY_SCHEDULE)
+        confirmed = (ns->relayMode == 1 && ns->schedState > 0);
+      else if (ns->queuedCmd.len >= 2 && ns->queuedCmd.data[0] == PKT_RELAY_CLEAR)
+        confirmed = (ns->relayMode == 0 && ns->schedState == 0);
     }
-    if (confirmed) ns->pending = false;
+    if (confirmed) {
+      ns->pending      = false;
+      ns->pendingRetry = 0;
+    } else if (!ns->queuedCmd.active && ns->pendingRetry < MAX_DL_RETRIES) {
+      // DL not confirmed — re-arm the same command bytes for retransmission.
+      ns->queuedCmd.active = true;
+      ns->pendingRetry++;
+      logAsync("[GW-DL] Retry %d slot%d type=0x%02X\n",
+               ns->pendingRetry, slotIdx + 1, ns->queuedCmd.data[0]);
+    }
   }
-  // Also clear pending on timeout regardless of command type
+  // Clear pending on timeout regardless of command type or retry state
   if (ns->pending && (millis() - ns->pendingSentAt) >= PENDING_TIMEOUT_MS) {
-    ns->pending = false;
+    ns->pending      = false;
+    ns->pendingRetry = 0;
   }
 
   xSemaphoreGive(g_nodesMutex);
@@ -489,6 +500,7 @@ bool tdmaQueueCommand(uint8_t slotIdx, const uint8_t* data, uint8_t len) {
       // to actual TX time so the 15 s timeout is anchored correctly.
       ns->pending       = true;
       ns->pendingSentAt = millis();
+      ns->pendingRetry  = 0;
       ok = true;
     }
     xSemaphoreGive(g_nodesMutex);

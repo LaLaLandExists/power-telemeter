@@ -1,7 +1,19 @@
 /**
  * fram_store.cpp
  *
- * FRAM persistence for gateway-side node state.
+ * UID-keyed FRAM persistence for gateway-side node hints.
+ *
+ * Each of the 8 FRAM slots is owned by a deviceUID, independent of TDMA
+ * slot assignment. When all 8 are occupied and a 9th unique UID needs
+ * storage the oldest slot (FIFO, tracked by nextWriteIdx in the header)
+ * is evicted and its data is lost.
+ *
+ * On node join:
+ *   framQueueRestore() → UID found → restore label, energy, history as hints
+ *                     → UID not found → allocate FIFO slot, stamp UID+label
+ *
+ * Every reboot is a full re-contention; persistence is best-effort only.
+ *
  * See fram_store.h for memory layout documentation.
  */
 #ifdef NODE_GATEWAY
@@ -18,24 +30,25 @@
 // ---------------------------------------------------------------------------
 // Layout constants
 // ---------------------------------------------------------------------------
-static constexpr uint32_t FRAM_MAGIC        = 0xDEADF00DUL;
-static constexpr uint8_t  FRAM_VERSION      = 2;
-static constexpr uint16_t FRAM_HEADER_BASE  = 0x0000;   // magic(4) + ver(1) + pad(11)
-static constexpr uint16_t FRAM_NODES_BASE   = 0x0010;   // first node block
+static constexpr uint32_t FRAM_MAGIC           = 0xDEADF00DUL;
+static constexpr uint8_t  FRAM_VERSION         = 2;
+static constexpr uint16_t FRAM_HEADER_BASE     = 0x0000;  // magic(4)+ver(1)+nextWr(1)+pad(10)
+static constexpr uint16_t FRAM_NEXT_WRITE_OFF  = 5;       // nextWriteIdx byte in header
+static constexpr uint16_t FRAM_NODES_BASE      = 0x0010;  // first node block
 
 // Per-node block offsets (relative to node block start)
-static constexpr uint16_t OFF_UID           = 0;    // uint16_t
-static constexpr uint16_t OFF_PAD           = 2;    // uint16_t (alignment pad)
-static constexpr uint16_t OFF_ENERGY        = 4;    // uint32_t
-static constexpr uint16_t OFF_HIST_HEAD     = 8;    // int32_t
-static constexpr uint16_t OFF_HIST_COUNT    = 12;   // int32_t
-static constexpr uint16_t OFF_LABEL         = 16;   // char[30]
-static constexpr uint16_t OFF_PAD2          = 46;   // uint16_t (align history to 48)
-static constexpr uint16_t OFF_HISTORY       = 48;   // HistoryPoint[120]
+static constexpr uint16_t OFF_UID        = 0;   // uint16_t
+static constexpr uint16_t OFF_PAD        = 2;   // uint16_t (alignment pad)
+static constexpr uint16_t OFF_ENERGY     = 4;   // uint32_t
+static constexpr uint16_t OFF_HIST_HEAD  = 8;   // int32_t
+static constexpr uint16_t OFF_HIST_COUNT = 12;  // int32_t
+static constexpr uint16_t OFF_LABEL      = 16;  // char[30]
+static constexpr uint16_t OFF_PAD2       = 46;  // uint16_t (align history to 48)
+static constexpr uint16_t OFF_HISTORY    = 48;  // HistoryPoint[120]
 
-static constexpr uint16_t LABEL_BYTES       = 30;   // sizeof(NodeState::label)
-static constexpr uint16_t HISTORY_BYTES     = HISTORY_MAX_POINTS * sizeof(HistoryPoint);
-static constexpr uint16_t NODE_BLOCK_SIZE   = OFF_HISTORY + HISTORY_BYTES;  // 1968
+static constexpr uint16_t LABEL_BYTES    = 30;
+static constexpr uint16_t HISTORY_BYTES  = HISTORY_MAX_POINTS * sizeof(HistoryPoint);
+static constexpr uint16_t NODE_BLOCK_SIZE = OFF_HISTORY + HISTORY_BYTES;  // 1968
 
 // ---------------------------------------------------------------------------
 // Module state
@@ -44,11 +57,39 @@ static FRAM s_fram(&Wire);
 static bool s_framOk = false;
 
 // ---------------------------------------------------------------------------
-// Helpers
+// Internal helpers
 // ---------------------------------------------------------------------------
 static inline uint16_t nodeBase(uint8_t idx)
 {
   return FRAM_NODES_BASE + (uint16_t)idx * NODE_BLOCK_SIZE;
+}
+
+/**
+ * Search all 8 FRAM slots for a given UID.
+ * @return slot index 0-7, or 0xFF if not found.
+ */
+static uint8_t framFindSlot(uint16_t uid)
+{
+  for (uint8_t s = 0; s < MAX_NODES; s++) {
+    if (s_fram.read16(nodeBase(s) + OFF_UID) == uid) return s;
+  }
+  return 0xFF;
+}
+
+/**
+ * Allocate the next FIFO slot, evicting whatever is there.
+ * Logs the evicted UID if the slot was occupied.
+ * @return FRAM slot index (0-7).
+ */
+static uint8_t framAllocFifoSlot()
+{
+  uint8_t slot = s_fram.read8(FRAM_HEADER_BASE + FRAM_NEXT_WRITE_OFF) % MAX_NODES;
+  uint16_t evicted = s_fram.read16(nodeBase(slot) + OFF_UID);
+  if (evicted != 0x0000 && evicted != 0xFFFF) {
+    logAsync("[FRAM] FIFO evict FRAM slot %u (UID=0x%04X)\n", slot + 1, evicted);
+  }
+  s_fram.write8(FRAM_HEADER_BASE + FRAM_NEXT_WRITE_OFF, (slot + 1) % MAX_NODES);
+  return slot;
 }
 
 // ---------------------------------------------------------------------------
@@ -68,21 +109,19 @@ bool framInit(uint8_t sda, uint8_t scl, uint8_t addr)
 
   uint32_t magic = s_fram.read32(FRAM_HEADER_BASE);
   if (magic != FRAM_MAGIC) {
-  // Blank or corrupted chip — stamp header
-  logAsync("[FRAM] Blank chip detected - writing header\n");
-  s_fram.write32(FRAM_HEADER_BASE, FRAM_MAGIC);
-  s_fram.write8(FRAM_HEADER_BASE + 4, FRAM_VERSION);
+    logAsync("[FRAM] Blank chip detected - writing header\n");
+    s_fram.write32(FRAM_HEADER_BASE, FRAM_MAGIC);
+    s_fram.write8(FRAM_HEADER_BASE + 4, FRAM_VERSION);
+    s_fram.write8(FRAM_HEADER_BASE + FRAM_NEXT_WRITE_OFF, 0);
   } else {
     uint8_t ver = s_fram.read8(FRAM_HEADER_BASE + 4);
     if (ver != FRAM_VERSION) {
-      // Layout changed — stamp new version, skip restore to avoid
-      // applying old data to wrong offsets.
       logAsync("[FRAM] Layout v%u -> v%u: skipping restore, "
                "data will repopulate\n", ver, FRAM_VERSION);
       s_fram.write8(FRAM_HEADER_BASE + 4, FRAM_VERSION);
-    // Return true so persistence is active for future writes
-     s_framOk = true;
-     return true;
+      s_fram.write8(FRAM_HEADER_BASE + FRAM_NEXT_WRITE_OFF, 0);
+      s_framOk = true;
+      return true;
     }
   }
 
@@ -93,10 +132,7 @@ bool framInit(uint8_t sda, uint8_t scl, uint8_t addr)
 void framLoadAll()
 {
   if (!s_framOk) return;
-
-  // Labels, energy, and history are all restored on demand via framQueueRestore()
-  // after a node joins and its UID is confirmed. Nothing is restored here at boot
-  // so that stale slot data from a previous node never pollutes a new joiner.
+  // All data restored on demand via framQueueRestore() after node joins.
   (void)0;
 }
 
@@ -105,10 +141,19 @@ void framSaveEnergy(uint8_t nodeIdx)
   if (!s_framOk) return;
 
   const NodeState& ns = g_nodes[nodeIdx];
-  uint16_t base = nodeBase(nodeIdx);
+  if (ns.deviceUID == 0x0000 || ns.deviceUID == 0xFFFF) return;
 
+  uint8_t framSlot = framFindSlot(ns.deviceUID);
+  if (framSlot == 0xFF) framSlot = framAllocFifoSlot();
+
+  uint16_t base = nodeBase(framSlot);
   s_fram.write16(base + OFF_UID,    ns.deviceUID);
   s_fram.write32(base + OFF_ENERGY, ns.accumEnergy);
+  if (ns.label[0] != '\0') {
+    s_fram.write(base + OFF_LABEL,
+                 reinterpret_cast<uint8_t*>(const_cast<char*>(ns.label)),
+                 LABEL_BYTES);
+  }
 }
 
 void framSaveHistory(uint8_t nodeIdx)
@@ -116,11 +161,20 @@ void framSaveHistory(uint8_t nodeIdx)
   if (!s_framOk) return;
 
   const NodeState& ns = g_nodes[nodeIdx];
-  uint16_t base = nodeBase(nodeIdx);
+  if (ns.deviceUID == 0x0000 || ns.deviceUID == 0xFFFF) return;
 
+  uint8_t framSlot = framFindSlot(ns.deviceUID);
+  if (framSlot == 0xFF) framSlot = framAllocFifoSlot();
+
+  uint16_t base = nodeBase(framSlot);
   s_fram.write16(base + OFF_UID,        ns.deviceUID);
   s_fram.write32(base + OFF_HIST_HEAD,  (uint32_t)ns.histHead);
   s_fram.write32(base + OFF_HIST_COUNT, (uint32_t)ns.histCount);
+  if (ns.label[0] != '\0') {
+    s_fram.write(base + OFF_LABEL,
+                 reinterpret_cast<uint8_t*>(const_cast<char*>(ns.label)),
+                 LABEL_BYTES);
+  }
   s_fram.write(base + OFF_HISTORY,
                reinterpret_cast<uint8_t*>(
                const_cast<HistoryPoint*>(ns.history)),
@@ -132,24 +186,25 @@ void framSaveLabel(uint8_t nodeIdx)
   if (!s_framOk) return;
 
   const NodeState& ns = g_nodes[nodeIdx];
-  uint16_t base = nodeBase(nodeIdx);
+  if (ns.deviceUID == 0x0000 || ns.deviceUID == 0xFFFF) return;
 
-  // Write UID alongside label so the cross-slot UID search in framTask()
-  // FRAM_RESTORE can find this entry even when the slot index shifts after reboot.
+  uint8_t framSlot = framFindSlot(ns.deviceUID);
+  if (framSlot == 0xFF) framSlot = framAllocFifoSlot();
+
+  uint16_t base = nodeBase(framSlot);
   s_fram.write16(base + OFF_UID, ns.deviceUID);
   s_fram.write(base + OFF_LABEL,
                reinterpret_cast<uint8_t*>(const_cast<char*>(ns.label)),
                LABEL_BYTES);
 
-  logAsync("[FRAM] Slot %u (UID=0x%04X): saved label \"%s\"\n",
-           nodeIdx + 1, ns.deviceUID, ns.label);
+  logAsync("[FRAM] UID=0x%04X: saved label \"%s\" to FRAM slot %u\n",
+           ns.deviceUID, ns.label, framSlot + 1);
 }
 
 // ---------------------------------------------------------------------------
-// Deferred save task — keeps I²C writes off the Core 1 TDMA task
+// Deferred save/restore task — keeps I2C off the Core 1 TDMA task
 // ---------------------------------------------------------------------------
 
-// Queue message encoding: bits 6:4 = operation flags, bits 3:0 = nodeIdx
 #define FRAM_SAVE_ENERGY  0x10u
 #define FRAM_SAVE_HISTORY 0x20u
 #define FRAM_RESTORE      0x40u
@@ -192,28 +247,37 @@ static void framTask(void* /*params*/)
     uint8_t idx = msg & 0x0Fu;
     if (idx >= MAX_NODES) continue;
 
+    // --- RESTORE ------------------------------------------------------------
     if (msg & FRAM_RESTORE) {
       uint16_t nodeUID = 0;
+      char initLabel[LABEL_BYTES] = {};
       if (xSemaphoreTake(g_nodesMutex, pdMS_TO_TICKS(20)) == pdTRUE) {
         nodeUID = g_nodes[idx].deviceUID;
+        strlcpy(initLabel, g_nodes[idx].label, LABEL_BYTES);
         xSemaphoreGive(g_nodesMutex);
       }
       if (nodeUID == 0x0000 || nodeUID == 0xFFFF) continue;
 
-      // Search all FRAM slots for this UID — the node may have been assigned
-      // a different slot index after a gateway reboot, so we can't assume the
-      // data lives at nodeBase(idx).
-      uint8_t framSlot = 0xFF;
-      for (uint8_t s = 0; s < MAX_NODES; s++) {
-        if (s_fram.read16(nodeBase(s) + OFF_UID) == nodeUID) {
-          framSlot = s;
-          break;
-        }
-      }
-      if (framSlot == 0xFF) continue;
+      uint8_t framSlot = framFindSlot(nodeUID);
 
-      // Read label, energy, and history from FRAM without holding the mutex
-      // (~47 ms at 400 kHz for the history block).
+      if (framSlot == 0xFF) {
+        // Novel node — stamp a FIFO slot so subsequent saves land correctly
+        // without needing another UID search.
+        framSlot = framAllocFifoSlot();
+        uint16_t base = nodeBase(framSlot);
+        s_fram.write16(base + OFF_UID, nodeUID);
+        s_fram.write(base + OFF_LABEL,
+                     reinterpret_cast<uint8_t*>(initLabel), LABEL_BYTES);
+        s_fram.write32(base + OFF_ENERGY, 0);
+        s_fram.write32(base + OFF_HIST_HEAD, 0);
+        s_fram.write32(base + OFF_HIST_COUNT, 0);
+        logAsync("[FRAM] UID=0x%04X: novel node, FIFO slot %u allocated\n",
+                 nodeUID, framSlot + 1);
+        continue;
+      }
+
+      // Known node — read snapshot without holding mutex (~47 ms at 400 kHz
+      // for the history block).
       uint16_t base = nodeBase(framSlot);
       s_fram.read(base + OFF_LABEL,
                   reinterpret_cast<uint8_t*>(s_snap.label), LABEL_BYTES);
@@ -236,40 +300,61 @@ static void framTask(void* /*params*/)
         xSemaphoreGive(g_nodesMutex);
       }
 
-      logAsync("[FRAM] Slot %u (UID=0x%04X) restored from FRAM slot %u: "
+      logAsync("[FRAM] UID=0x%04X (slot %u) restored from FRAM slot %u: "
                "label=\"%s\" energy=%lu Wh histCount=%d\n",
-               idx + 1, nodeUID, framSlot + 1,
+               nodeUID, idx + 1, framSlot + 1,
                s_snap.label[0] ? s_snap.label : "(none)",
                (unsigned long)s_snap.accumEnergy, (int)s_snap.histCount);
       continue;
     }
 
+    // --- SAVE ENERGY --------------------------------------------------------
     if (msg & FRAM_SAVE_ENERGY) {
-      // Snapshot energy fields under mutex (< 1 µs copy), then write without mutex.
       if (xSemaphoreTake(g_nodesMutex, pdMS_TO_TICKS(20)) == pdTRUE) {
         s_snap.deviceUID   = g_nodes[idx].deviceUID;
         s_snap.accumEnergy = g_nodes[idx].accumEnergy;
+        strlcpy(s_snap.label, g_nodes[idx].label, LABEL_BYTES);
         xSemaphoreGive(g_nodesMutex);
       }
-      uint16_t base = nodeBase(idx);
+      if (s_snap.deviceUID == 0x0000 || s_snap.deviceUID == 0xFFFF) continue;
+
+      uint8_t framSlot = framFindSlot(s_snap.deviceUID);
+      if (framSlot == 0xFF) framSlot = framAllocFifoSlot();
+
+      uint16_t base = nodeBase(framSlot);
       s_fram.write16(base + OFF_UID,    s_snap.deviceUID);
       s_fram.write32(base + OFF_ENERGY, s_snap.accumEnergy);
+      // Only update the label when non-empty so a cleared label (post-eviction)
+      // does not overwrite a previously saved user-assigned name.
+      if (s_snap.label[0] != '\0') {
+        s_fram.write(base + OFF_LABEL,
+                     reinterpret_cast<uint8_t*>(s_snap.label), LABEL_BYTES);
+      }
     }
 
+    // --- SAVE HISTORY -------------------------------------------------------
     if (msg & FRAM_SAVE_HISTORY) {
-      // Snapshot history under mutex (memcpy ~32 µs), then write without mutex
-      // (~47 ms at 400 kHz) — holds mutex only for the brief copy.
       if (xSemaphoreTake(g_nodesMutex, pdMS_TO_TICKS(20)) == pdTRUE) {
         s_snap.deviceUID  = g_nodes[idx].deviceUID;
         s_snap.histHead   = g_nodes[idx].histHead;
         s_snap.histCount  = g_nodes[idx].histCount;
+        strlcpy(s_snap.label, g_nodes[idx].label, LABEL_BYTES);
         memcpy(s_snap.history, g_nodes[idx].history, sizeof(s_snap.history));
         xSemaphoreGive(g_nodesMutex);
       }
-      uint16_t base = nodeBase(idx);
+      if (s_snap.deviceUID == 0x0000 || s_snap.deviceUID == 0xFFFF) continue;
+
+      uint8_t framSlot = framFindSlot(s_snap.deviceUID);
+      if (framSlot == 0xFF) framSlot = framAllocFifoSlot();
+
+      uint16_t base = nodeBase(framSlot);
       s_fram.write16(base + OFF_UID,        s_snap.deviceUID);
       s_fram.write32(base + OFF_HIST_HEAD,  (uint32_t)s_snap.histHead);
       s_fram.write32(base + OFF_HIST_COUNT, (uint32_t)s_snap.histCount);
+      if (s_snap.label[0] != '\0') {
+        s_fram.write(base + OFF_LABEL,
+                     reinterpret_cast<uint8_t*>(s_snap.label), LABEL_BYTES);
+      }
       s_fram.write(base + OFF_HISTORY,
                    reinterpret_cast<uint8_t*>(s_snap.history),
                    HISTORY_BYTES);
