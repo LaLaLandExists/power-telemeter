@@ -36,6 +36,7 @@
 extern uint8_t RELAY_PIN;       // Defined in main.cpp (NODE_TELEMETRY build)
 extern uint8_t LED_GREEN_PIN;   // Defined in main.cpp (NODE_TELEMETRY build)
 extern uint8_t LED_RED_PIN;     // Defined in main.cpp (NODE_TELEMETRY build)
+extern uint8_t DIO0_PIN;        // Defined in main.cpp (NODE_TELEMETRY build)
 
 // --- Radio instance (defined in main.cpp) ------------------------------------
 extern SX1278 radio;
@@ -395,7 +396,7 @@ static int16_t rxWindow(uint8_t* buf, size_t maxLen, uint32_t windowMs) {
     // directly as a fallback for marginal breadboard contacts that pass the
     // level check but produce edges too slow to fire attachInterrupt().
     bool pktReady = radio.available() ||
-                    (digitalRead(14) && radio.getPacketLength() > 0); // 14 = LORA_PIN_DIO0
+                    (digitalRead(DIO0_PIN) && radio.getPacketLength() > 0);
     if (pktReady) {
       int len = radio.getPacketLength();
       if (len > 0 && (size_t)len <= maxLen) {
@@ -736,7 +737,7 @@ void nodeTdmaTaskStart() {
   xTaskCreatePinnedToCore(schedTask, "SCHED", 2048, nullptr, 1, nullptr, 0);
 
   // LED state + nudge task - Core 0, priority 1; drives two-color state LED
-  xTaskCreatePinnedToCore(ledTask, "LED", 1024, nullptr, 1,
+  xTaskCreatePinnedToCore(ledTask, "LED", 2048, nullptr, 1,
                           &s_ledTaskHandle, 0);
 
   // TDMA radio task - Core 1, priority 2

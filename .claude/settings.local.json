@@ -10,7 +10,17 @@
       "PowerShell(Copy-Item \"c:\\\\Users\\\\Lawrence Joven Garol\\\\Documents\\\\dev\\\\power-telemeterv2\\\\src\\\\tdma_protocol.h\" \"c:\\\\Users\\\\Lawrence Joven Garol\\\\Documents\\\\dev\\\\power-telemeterv2\\\\rollback\\\\sf7\\\\tdma_protocol.h\")",
       "PowerShell(Copy-Item \"c:\\\\Users\\\\Lawrence Joven Garol\\\\Documents\\\\dev\\\\power-telemeterv2\\\\src\\\\gateway_tdma_task.cpp\" \"c:\\\\Users\\\\Lawrence Joven Garol\\\\Documents\\\\dev\\\\power-telemeterv2\\\\rollback\\\\sf7\\\\gateway_tdma_task.cpp\")",
       "PowerShell(Copy-Item \"c:\\\\Users\\\\Lawrence Joven Garol\\\\Documents\\\\dev\\\\power-telemeterv2\\\\src\\\\node_tdma_task.cpp\" \"c:\\\\Users\\\\Lawrence Joven Garol\\\\Documents\\\\dev\\\\power-telemeterv2\\\\rollback\\\\sf7\\\\node_tdma_task.cpp\")",
-      "PowerShell(Get-ChildItem -Path \"c:\\\\Users\\\\Lawrence Joven Garol\\\\Documents\\\\dev\\\\power-telemeterv2\\\\src\" | Where-Object { $_.Name -match 'tdma|protocol' } | Select-Object FullName)"
+      "PowerShell(Get-ChildItem -Path \"c:\\\\Users\\\\Lawrence Joven Garol\\\\Documents\\\\dev\\\\power-telemeterv2\\\\src\" | Where-Object { $_.Name -match 'tdma|protocol' } | Select-Object FullName)",
+      "Bash(~/.platformio/penv/bin/pio run *)",
+      "PowerShell(Get-Command pio -ErrorAction SilentlyContinue; Get-ChildItem \"$env:USERPROFILE\\\\.platformio\\\\penv\\\\Scripts\\\\pio.exe\" -ErrorAction SilentlyContinue)",
+      "PowerShell(cd \"c:\\\\Users\\\\Lawrence Joven Garol\\\\Documents\\\\dev\\\\power-telemeter\\\\power-telemeter\"; & \"$env:USERPROFILE\\\\.platformio\\\\penv\\\\Scripts\\\\pio.exe\" run -e node_s3 2>&1 | Select-Object -Last 25)",
+      "PowerShell(cd \"c:\\\\Users\\\\Lawrence Joven Garol\\\\Documents\\\\dev\\\\power-telemeter\\\\power-telemeter\"; & \"$env:USERPROFILE\\\\.platformio\\\\penv\\\\Scripts\\\\pio.exe\" run -e node_s3_enc 2>&1 | Select-Object -Last 25)",
+      "Bash(find \"/c/Users/Lawrence Joven Garol/.platformio/packages/framework-arduinoespressif32/tools/sdk/esp32s3/bin/\" -name \"bootloader_*.elf\" 2>/dev/null)",
+      "Read(//c/Users/Lawrence Joven Garol/.platformio/packages/framework-arduinoespressif32/tools/sdk/esp32s3/bin//**)",
+      "Bash(find \"/c/Users/Lawrence Joven Garol/.platformio/packages/framework-arduinoespressif32/tools/sdk/esp32s3\" -name \"sdkconfig.h\" 2>/dev/null | head -10)",
+      "Read(//c/Users/Lawrence Joven Garol/.platformio/packages/framework-arduinoespressif32/tools/sdk/esp32s3/**)",
+      "Read(//c/Users/Lawrence Joven Garol/.platformio/packages/framework-arduinoespressif32/boards/**)",
+      "Read(//c/Users/Lawrence Joven Garol/.platformio/**)"
     ]
   }
 }

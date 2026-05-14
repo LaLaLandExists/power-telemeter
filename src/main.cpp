@@ -91,7 +91,6 @@
   #include "gateway_wifi_config.h"
   #include "fram_store.h"
 #endif
-
 #ifdef NODE_TELEMETRY
   #ifndef PZEM_FAKE
   #include <PZEM004Tv30.h>
@@ -105,13 +104,24 @@
 #endif
 
 // --- Pin definitions (shared) ------------------------------------------------
-#define LORA_PIN_NSS    5
-#define LORA_PIN_MOSI   18
-#define LORA_PIN_MISO   19
-#define LORA_PIN_SCK    21
-#define LORA_PIN_DIO1   27   // Tie to GND if unused
-#define LORA_PIN_DIO0   14
-#define LORA_PIN_RST    13
+#ifdef BOARD_S3_SUPERMINI
+  // ESP32-S3 Super Mini — THT pins only (GPIO 1-13, TX=43, RX=44)
+  #define LORA_PIN_NSS    4
+  #define LORA_PIN_MOSI   5
+  #define LORA_PIN_MISO   6
+  #define LORA_PIN_SCK    7
+  #define LORA_PIN_DIO0   8
+  #define LORA_PIN_RST    9
+  #define LORA_PIN_DIO1   RADIOLIB_NC
+#else
+  #define LORA_PIN_NSS    5
+  #define LORA_PIN_MOSI   18
+  #define LORA_PIN_MISO   19
+  #define LORA_PIN_SCK    21
+  #define LORA_PIN_DIO0   14
+  #define LORA_PIN_RST    13
+  #define LORA_PIN_DIO1   27   // Tie to GND if unused
+#endif
 
 // --- Role-specific pin definitions -------------------------------------------
 #ifdef NODE_GATEWAY
@@ -121,20 +131,29 @@
 #endif
 
 #ifdef NODE_TELEMETRY
-  #define PZEM_RX_PIN  22   // PZEM RX  -> ESP32 TX2
-  #define PZEM_TX_PIN  23   // PZEM TX  <- ESP32 RX2
-  #define RELAY_PIN_      25  // Relay signal (active HIGH)
-  #define LED_GREEN_PIN_  32  // Two-color LED - green channel
-  #define LED_RED_PIN_    33  // Two-color LED - red channel
-
-  #define NODE_BTN_PIN    34  // "The button" — active LOW, external pull-up required
-                              //   short press (< 3 s): reboot (forces re-contend)
-                              //   long  press (≥ 3 s): clear encryption key + reboot
+  #ifdef BOARD_S3_SUPERMINI
+    #define PZEM_TX_PIN     43   // ESP32-S3 physical TX -> PZEM RX
+    #define PZEM_RX_PIN     44   // ESP32-S3 physical RX <- PZEM TX
+    #define RELAY_PIN_      3    // active HIGH; GPIO3 is JTAG strapping — LOW at boot is safe
+    #define LED_GREEN_PIN_  11
+    #define LED_RED_PIN_    12
+    #define NODE_BTN_PIN    13
+  #else
+    #define PZEM_RX_PIN     22   // PZEM RX  -> ESP32 TX2
+    #define PZEM_TX_PIN     23   // PZEM TX  <- ESP32 RX2
+    #define RELAY_PIN_      25   // Relay signal (active HIGH)
+    #define LED_GREEN_PIN_  32   // Two-color LED - green channel
+    #define LED_RED_PIN_    33   // Two-color LED - red channel
+    #define NODE_BTN_PIN    34   // "The button" — active LOW, external pull-up required
+                                 //   short press (< 3 s): reboot (forces re-contend)
+                                 //   long  press (≥ 3 s): clear encryption key + reboot
+  #endif
 
   // Exported - referenced by node_tdma_task.cpp
   uint8_t RELAY_PIN     = RELAY_PIN_;
   uint8_t LED_GREEN_PIN = LED_GREEN_PIN_;
   uint8_t LED_RED_PIN   = LED_RED_PIN_;
+  uint8_t DIO0_PIN      = LORA_PIN_DIO0;
 #endif
 
 // --- Hardware instances -------------------------------------------------------
@@ -282,7 +301,7 @@ void loop() {
 // =============================================================================
 #ifdef NODE_TELEMETRY
 
-// GPIO 34 is input-only on ESP32 — no internal pull-up; requires external resistor.
+// NODE_BTN_PIN is active LOW; external pull-up required (GPIO34 on ESP32 is input-only).
 static void btnTask(void*) {
   pinMode(NODE_BTN_PIN, INPUT);
   vTaskDelay(pdMS_TO_TICKS(500));  // skip transients during boot
@@ -332,13 +351,6 @@ void setup() {
   pinMode(LED_RED_PIN_,   OUTPUT);
   digitalWrite(LED_RED_PIN_,   HIGH);
 
-  // 3 fast green blinks - boot indicator
-  for (int i = 0; i < 6; i++) {
-    digitalWrite(LED_GREEN_PIN_, i & 1 ? HIGH : LOW);
-    delay(120);
-  }
-  digitalWrite(LED_GREEN_PIN_, HIGH);
-
   // -- Packet encryption (encrypted builds only) ----------------------------
   // On first boot (no NVS key) the node blocks here waiting for the operator
   // to tap a pre-written MIFARE card to the PN532 (SDA=PN532_SDA, SCL=PN532_SCL).
@@ -369,6 +381,18 @@ void setup() {
 
   // -- SX1278 radio ----------------------------------------------------------
   SPI.begin(LORA_PIN_SCK, LORA_PIN_MISO, LORA_PIN_MOSI, LORA_PIN_NSS);
+#ifdef BOARD_S3_SUPERMINI
+  // SPI.begin() resets GPIO11/12 (default FSPI pins) to INPUT, clobbering the pinMode above.
+  pinMode(LED_GREEN_PIN_, OUTPUT);
+  pinMode(LED_RED_PIN_,   OUTPUT);
+#endif
+
+  // 3 fast green blinks - boot indicator
+  for (int i = 0; i < 6; i++) {
+    digitalWrite(LED_GREEN_PIN_, i & 1 ? HIGH : LOW);
+    delay(120);
+  }
+  digitalWrite(LED_GREEN_PIN_, HIGH);
   Serial.print("[LORA] Initialising SX1278 ... ");
   int16_t loraState = radio.begin(
     LORA_CHANNELS[0],   // Ch 0 - listen for beacon

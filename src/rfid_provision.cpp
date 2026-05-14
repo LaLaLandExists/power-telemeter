@@ -12,26 +12,33 @@
 #include <Adafruit_PN532.h>
 #include <string.h>
 
-// PN532 I2C pins differ by role.
-// Gateway: shares existing FRAM bus (SDA=32 SCL=33); PN532 addr 0x48 != FRAM 0x50.
-// Node:    dedicated bus on free GPIOs (SDA=4 SCL=26).
+// PN532 I2C pins differ by role and board.
+// Gateway:           shares existing FRAM bus (SDA=32 SCL=33); PN532 addr 0x48 != FRAM 0x50.
+// Node (ESP32-dev):  dedicated bus on free GPIOs (SDA=4 SCL=26).
+// Node (S3 Super Mini): dedicated bus on THT GPIOs (SDA=1 SCL=2).
 #ifdef NODE_GATEWAY
-  #define PN532_SDA 32
-  #define PN532_SCL 33
+  #define PN532_SDA       32
+  #define PN532_SCL       33
+  #define PN532_IRQ_DUMMY 35
+#elif defined(NODE_TELEMETRY) && defined(BOARD_S3_SUPERMINI)
+  #define PN532_SDA       1
+  #define PN532_SCL       2
+  #define PN532_IRQ_DUMMY 8    // freed by LoRa pin assignment; dummy only — not physically wired
 #elif defined(NODE_TELEMETRY)
-  #define PN532_SDA 4
-  #define PN532_SCL 26
+  #define PN532_SDA       4
+  #define PN532_SCL       26
+  #define PN532_IRQ_DUMMY 35
 #else
   #error "rfid_provision: role not defined — set NODE_GATEWAY or NODE_TELEMETRY"
 #endif
 
-// GPIO 35 (input-only) as IRQ dummy; GPIO 0 as RST dummy.
+// PN532_IRQ_DUMMY / GPIO 0 as RST dummy.
 // Adafruit_PN532 calls pinMode() unconditionally in its I2C constructor, so
 // passing 0xFF (→ int8_t -1 → uint8_t 255) triggers the ESP32 HAL invalid-pin
 // warning. Neither dummy is physically connected to the PN532; the IRQ line is
 // never read (polling mode) and the RST pulse during begin() is harmless on an
-// unconnected GPIO. GPIO 34 is reserved for the user button (NODE_BTN_PIN).
-static Adafruit_PN532 s_nfc(35, 0, &Wire);
+// unconnected GPIO.
+static Adafruit_PN532 s_nfc(PN532_IRQ_DUMMY, 0, &Wire);
 static bool           s_initOk = false;
 
 // MIFARE Classic sector 1, block 0 — stores 16-byte AES key
