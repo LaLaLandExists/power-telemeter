@@ -752,10 +752,25 @@ static void handleGetProvisionStatus(AsyncWebServerRequest* req) {
   req->send(200, "application/json", json);
 }
 
-static void handlePostKeyRegen(AsyncWebServerRequest* req) {
+static volatile bool s_keyRegenPending = false;
+
+static void keyRegenTask(void* /*params*/) {
+  g_networkEpoch++;
+  logAsync("[WEB] Epoch bumped to %d — regenerating key after invalidating beacon\n", g_networkEpoch);
+  vTaskDelay(pdMS_TO_TICKS(SUPERFRAME_MS + 500));  // guarantee ≥1 beacon with new epoch
   cryptoGenerateKey();
-  logAsync("[WEB] Network key regenerated via dashboard\n");
-  req->send(200, "application/json", "{\"ok\":true}");
+  s_keyRegenPending = false;
+  vTaskDelete(nullptr);
+}
+
+static void handlePostKeyRegen(AsyncWebServerRequest* req) {
+  if (s_keyRegenPending) {
+    req->send(409, "application/json", "{\"error\":\"already in progress\"}");
+    return;
+  }
+  s_keyRegenPending = true;
+  xTaskCreate(keyRegenTask, "KEYREGEN", 3072, nullptr, 1, nullptr);
+  req->send(202, "application/json", "{\"ok\":true}");
 }
 
 #endif // PKT_ENCRYPTION
@@ -765,7 +780,7 @@ static void handlePostKeyRegen(AsyncWebServerRequest* req) {
 // POST /api/reboot — responds immediately then restarts after 300 ms
 // -----------------------------------------------------------------------------
 static void rebootTask(void* /*params*/) {
-  vTaskDelay(pdMS_TO_TICKS(300));
+  vTaskDelay(pdMS_TO_TICKS(300));  // let HTTP response flush
   ESP.restart();
 }
 
