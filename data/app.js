@@ -1,6 +1,6 @@
 /* -- State ------------------------------------------------------- */
 let cNid=null,chart=null,cMet='power',socket=null,wsOk=false,fbT=null;
-let NC=[],gwTimeSet=false,gwTime='--:--:--';
+let NC=[],gwTimeSet=false,gwTime='--:--:--',gwNtpSynced=false;
 let pendingCmd={};
 let relayOffAt={};
 let costRate=parseFloat(localStorage.getItem('pt-costRate'))||12.00;
@@ -13,7 +13,10 @@ const MC={
 const LOG_MAX_LINES=200;
 const LOG_PREFIX_CLASS={
   'GW-UL':'ok','GW-BCN':'ok','GW-DL':'ok','GW-CW':'ok','GW-TDMA':'ok',
-  'WIFI':'info','WEB':'info','WS':'info','FRAM':'info','FS':'info','LORA':'info',
+  'NODE-TDMA':'ok','NODE-TX':'ok','NODE-DL':'ok','NODE-JOIN':'ok',
+  'NODE-RTC':'ok','NODE-SCHED':'ok','NODE':'ok','PZEM':'ok',
+  'WIFI':'info','WEB':'info','WS':'info','FRAM':'info','FS':'info',
+  'LORA':'info','CRYPTO':'info','RFID':'info','GW':'info',
 };
 const logSuppressed=new Set();
 const SL=['','Waiting','Active'];
@@ -112,7 +115,7 @@ function appendLog(line){
 function connectWS(){
   const u=(location.protocol==='https:'?'wss:':'ws:')+'//'+location.host+'/ws';
   socket=new WebSocket(u);
-  socket.onopen=()=>{wsOk=true;wsDot(true);syncTime();wsSend({cmd:'get_nodes'});};
+  socket.onopen=()=>{wsOk=true;wsDot(true);if(!gwNtpSynced)syncTime();wsSend({cmd:'get_nodes'});};
   socket.onmessage=e=>{try{onMsg(JSON.parse(e.data));}catch(x){}};
   socket.onclose=()=>{wsOk=false;wsDot(false);startFallback();setTimeout(connectWS,3000);};
   socket.onerror=()=>socket.close();
@@ -123,7 +126,7 @@ function wsDot(ok){
   el.className='hdr-badge M '+(ok?'ws-ok':'ws-err');
   el.innerHTML=`<svg width="8" height="8" viewBox="0 0 10 10" style="display:inline;margin-right:4px"><circle cx="5" cy="5" r="4" fill="currentColor"/></svg>${ok?'WS':'WS✘'}`;
 }
-function syncTime(){const d=new Date();wsSend({cmd:'set_time',hour:d.getHours(),minute:d.getMinutes(),second:d.getSeconds()});}
+function syncTime(){const d=new Date();wsSend({cmd:'set_time',hour:d.getHours(),minute:d.getMinutes(),second:d.getSeconds(),utcOffset:-d.getTimezoneOffset()*60});}
 function doSyncTime(){
   syncTime();
   const btn=$('syncBtn');if(!btn)return;
@@ -136,12 +139,16 @@ function doSyncTime(){
 function updGwTime(){
   const el=$('gwTimeVal');if(el)el.textContent=gwTimeSet?gwTime:'Not synced';
   const w=$('gwTimeWarn');if(w)w.style.display=gwTimeSet?'none':'block';
+  const src=$('gwTimeSrc');
+  if(src){src.textContent='NTP';src.style.display=gwNtpSynced?'':'none';}
+  const btn=$('syncBtn');if(btn)btn.style.display=gwNtpSynced?'none':'';
 }
 
 /* -- Message handler --------------------------------------------- */
 function onMsg(m){
   if(m.timeSet!==undefined)gwTimeSet=m.timeSet;
   if(m.time)gwTime=m.time;
+  if(m.ntpSynced!==undefined)gwNtpSynced=m.ntpSynced;
   updGwTime();
 
   if(m.type==='nodes'){
@@ -171,7 +178,7 @@ function onMsg(m){
     if(cNid===m.node&&!document.querySelector('.rename-input'))sT('detLabel',m.name);
     if(!cNid)renderGrid(NC);
   }
-  else if(m.type==='time_set'){gwTimeSet=true;if(m.time)gwTime=m.time;updGwTime();}
+  else if(m.type==='time_set'){gwTimeSet=true;if(m.time)gwTime=m.time;if(m.source)gwNtpSynced=(m.source==='ntp');updGwTime();}
   else if(m.type==='threshold_ack'){if(!m.success){if(m.node!==undefined)delete pendingCmd[m.node];alert('Threshold command failed');}}
   else if(m.type==='nudge_ack'){if(!m.success){if(m.node!==undefined)delete pendingCmd[m.node];alert('Nudge failed');}}
   else if(m.type==='relay_ack'||m.type==='schedule_ack'||m.type==='clear_ack'){if(!m.success){if(m.node!==undefined)delete pendingCmd[m.node];alert('Command failed');}}
@@ -556,6 +563,7 @@ async function fetchSys(){
     sT('gwNodes',(d.nodeCount||0)+'/'+(d.maxNodes||8));
     if(d.timeSet!==undefined)gwTimeSet=d.timeSet;
     if(d.time)gwTime=d.time;
+    if(d.ntpSynced!==undefined)gwNtpSynced=d.ntpSynced;
     updGwTime();
     if(d.version)sT('fwVer',d.version);
     updNetPanel(d);

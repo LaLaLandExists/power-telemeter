@@ -226,9 +226,10 @@ static void buildNodesDoc(JsonDocument &doc)
   }
   char timeBuf[9];
   gwTimeString(timeBuf);
-  doc["count"] = count;
-  doc["timeSet"] = g_timeSet;
-  doc["time"] = timeBuf;
+  doc["count"]     = count;
+  doc["timeSet"]   = g_timeSet;
+  doc["time"]      = timeBuf;
+  doc["ntpSynced"] = wifiIsNtpSynced();
 }
 
 // WebSocket command handler
@@ -368,20 +369,40 @@ static void handleWsMessage(AsyncWebSocketClient *client, const String &payload)
   // -- set_time -----------------------------------------------------------------
   if (strcmp(cmd, "set_time") == 0)
   {
-    uint8_t h = (uint8_t)(doc["hour"] | 0);
-    uint8_t m = (uint8_t)(doc["minute"] | 0);
-    uint8_t s = (uint8_t)(doc["second"] | 0);
-    setGatewayTime(h, m, s);
+    // Always consume the timezone offset when provided — independent of NTP state.
+    if (doc["utcOffset"].is<int32_t>())
+    {
+      int32_t off = (int32_t)doc["utcOffset"];
+      if (off >= -43200 * 60 && off <= 50400 * 60) // sanity: UTC-12 .. UTC+14
+        wifiSetTzOffset(off);
+    }
+
     char timeBuf[9];
     gwTimeString(timeBuf);
     JsonDocument bcast;
-    bcast["type"] = "time_set";
+    bcast["type"]    = "time_set";
     bcast["timeSet"] = true;
-    bcast["time"] = timeBuf;
+    if (wifiIsNtpSynced())
+    {
+      // NTP is authoritative — echo current NTP time back to the requesting
+      // client only; do not override the synced clock with browser time.
+      bcast["time"]   = timeBuf;
+      bcast["source"] = "ntp";
+      wsSendToClient(client, bcast);
+      return;
+    }
+    // NTP not active — accept client time as clock source (AP mode or NTP failed)
+    uint8_t h = (uint8_t)(doc["hour"]   | 0);
+    uint8_t m = (uint8_t)(doc["minute"] | 0);
+    uint8_t s = (uint8_t)(doc["second"] | 0);
+    setGatewayTime(h, m, s);
+    gwTimeString(timeBuf);
+    bcast["time"]   = timeBuf;
+    bcast["source"] = "client";
     String json;
     serializeJson(bcast, json);
     ws.textAll(json);
-    logAsync("[WEB] Time set to %s\n", timeBuf);
+    logAsync("[WEB] Time set from client: %s\n", timeBuf);
     return;
   }
 
@@ -635,23 +656,37 @@ static void handlePostNodeName(AsyncWebServerRequest *req)
 /** POST /api/time  body: hour=H&minute=M&second=S */
 static void handlePostTime(AsyncWebServerRequest *req)
 {
+  char timeBuf[9];
+  if (wifiIsNtpSynced())
+  {
+    gwTimeString(timeBuf);
+    JsonDocument doc;
+    doc["ok"]     = true;
+    doc["source"] = "ntp";
+    doc["time"]   = timeBuf;
+    String json;
+    serializeJson(doc, json);
+    req->send(200, "application/json", json);
+    return;
+  }
+
   uint8_t h = req->hasParam("hour", true) ? (uint8_t)req->getParam("hour", true)->value().toInt() : 0;
   uint8_t m = req->hasParam("minute", true) ? (uint8_t)req->getParam("minute", true)->value().toInt() : 0;
   uint8_t s = req->hasParam("second", true) ? (uint8_t)req->getParam("second", true)->value().toInt() : 0;
   setGatewayTime(h, m, s);
 
-  char timeBuf[9];
   gwTimeString(timeBuf);
 
   JsonDocument bcast;
-  bcast["type"] = "time_set";
+  bcast["type"]    = "time_set";
   bcast["timeSet"] = true;
-  bcast["time"] = timeBuf;
+  bcast["time"]    = timeBuf;
+  bcast["source"]  = "client";
   String json;
   serializeJson(bcast, json);
   ws.textAll(json);
 
-  logAsync("[WEB] POST /api/time -> %s\n", timeBuf);
+  logAsync("[WEB] POST /api/time (client) -> %s\n", timeBuf);
   req->send(200, "application/json", "{\"ok\":true}");
 }
 
@@ -675,12 +710,13 @@ static void handleGetStatus(AsyncWebServerRequest *req)
   doc["nodeCount"] = nodeCount;
   doc["maxNodes"] = MAX_NODES;
   doc["wsClients"] = ws.count();
-  doc["timeSet"] = g_timeSet;
-  doc["time"] = timeBuf;
-  doc["apActive"] = wifiIsApActive();
-  doc["version"]  = FW_VERSION_STR;
-  doc["wifiMode"] = wifiIsApActive() ? "ap" : "sta";
-  doc["ssid"]     = wifiIsApActive() ? CONFIG_AP_SSID : WiFi.SSID();
+  doc["timeSet"]   = g_timeSet;
+  doc["time"]      = timeBuf;
+  doc["ntpSynced"] = wifiIsNtpSynced();
+  doc["apActive"]  = wifiIsApActive();
+  doc["version"]   = FW_VERSION_STR;
+  doc["wifiMode"]  = wifiIsApActive() ? "ap" : "sta";
+  doc["ssid"]      = wifiIsApActive() ? CONFIG_AP_SSID : WiFi.SSID();
 
   String json;
   serializeJson(doc, json);

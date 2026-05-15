@@ -71,6 +71,14 @@
 #define FW_VERSION_STR          "v1.0.0"  // human-readable string for /api/info
                                            // protocol version integer: FW_VERSION in tdma_protocol.h
 
+// NTP — override via build flag, e.g. -D NTP_UTC_OFFSET_SEC=28800 for UTC+8
+#ifndef NTP_SERVER
+#  define NTP_SERVER         "pool.ntp.org"
+#endif
+#ifndef NTP_UTC_OFFSET_SEC
+#  define NTP_UTC_OFFSET_SEC 0   // seconds east of UTC; 0 = UTC
+#endif
+
 // -- Public API ----------------------------------------------------------------
 
 /** Called once at the top of setup(). Always returns promptly.
@@ -93,3 +101,12 @@ void wifiClearCredentials();
 /** Status accessors — used by /api/status to include apActive field. */
 bool wifiIsApActive();
 bool wifiIsStaConnected();
+
+/** Returns true if NTP has successfully synced at least once this session.
+ *  Always false while in AP-only mode (no internet route). */
+bool wifiIsNtpSynced();
+
+/** Persist a UTC offset (seconds east) to NVS and, if STA is connected,
+ *  immediately reconfigure NTP with the new timezone. Called when the
+ *  dashboard provides the browser's timezone offset via set_time. */
+void wifiSetTzOffset(int32_t offsetSec);

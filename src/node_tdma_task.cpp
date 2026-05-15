@@ -168,8 +168,8 @@ static bool     s_pzemEnergyBaseSet = false;
 // A two-color LED (red=LED_RED_PIN, green=LED_GREEN_PIN) provides a persistent
 // visual readout of the node's TDMA state:
 //
-//   ST_LISTEN      -> yellow slow blink  (500 ms on / 500 ms off)
-//   ST_CONTENDING  -> yellow fast blink  (125 ms on / 125 ms off)
+//   ST_LISTEN      -> red slow blink     (500 ms on / 500 ms off)  no beacon = possible key mismatch
+//   ST_CONTENDING  -> green fast blink   (125 ms on / 125 ms off)
 //   ST_REGISTERED  -> green heartbeat    ( 50 ms on / 1800 ms off)
 //
 // PKT_NUDGE overrides all state patterns with a 3 s red rapid-blink
@@ -202,16 +202,16 @@ static void ledTask(void* /*params*/) {
     if (!nudged) {
       switch (s_tdmaLedMode) {
       case LED_MODE_LISTEN:
-        // Yellow slow blink - searching for beacon
-        setLed(true, true);
+        // Red slow blink - no beacon heard; on encrypted builds this can mean key mismatch
+        setLed(true, false);
         nudged = (ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS(500)) > 0);
         setLed(false, false);
         if (!nudged) nudged = (ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS(500)) > 0);
         break;
 
       case LED_MODE_CONTENDING:
-        // Yellow fast blink - join attempt in progress
-        setLed(true, true);
+        // Green fast blink - join attempt in progress
+        setLed(false, true);
         nudged = (ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS(125)) > 0);
         setLed(false, false);
         if (!nudged) nudged = (ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS(125)) > 0);

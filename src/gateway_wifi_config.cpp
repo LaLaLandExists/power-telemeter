@@ -16,6 +16,7 @@
  */
 
 #include "gateway_wifi_config.h"
+#include "gateway_state.h"
 #include "log_async.h"
 
 #include <WiFi.h>
@@ -39,6 +40,45 @@ static bool      s_apActive     = false;
 static bool      s_staConnected = false;
 static bool      s_apEventRegistered = false; // guard: register AP_START handler once
 static DNSServer s_dns;
+
+// -- NTP state ---------------------------------------------------------------------------------
+#define NTP_POLL_MS    2000UL       // poll interval while waiting for first sync
+#define NTP_RESYNC_MS  3600000UL    // re-anchor millis clock from system time once per hour
+
+static bool     s_ntpSynced    = false;
+static uint32_t s_ntpLastCheck = 0;
+
+static int32_t nvsLoadTzOffset()
+{
+  Preferences p;
+  p.begin("wifi-cfg", true);
+  int32_t off = p.getInt("tzoff", NTP_UTC_OFFSET_SEC);
+  p.end();
+  return off;
+}
+
+static void nvsSaveTzOffset(int32_t offsetSec)
+{
+  Preferences p;
+  p.begin("wifi-cfg", false);
+  p.putInt("tzoff", offsetSec);
+  p.end();
+}
+
+static void startNtp()
+{
+  int32_t off = nvsLoadTzOffset();
+  configTime(off, 0, NTP_SERVER);
+  s_ntpSynced    = false;
+  s_ntpLastCheck = millis();
+  logAsync("[WIFI] NTP: syncing via %s (UTC%+d)\n",
+           NTP_SERVER, (int)(off / 3600));
+}
+
+static void stopNtp()
+{
+  s_ntpSynced = false;
+}
 
 static const IPAddress AP_IP(192, 168, 4, 1);
 static const IPAddress AP_SUBNET(255, 255, 255, 0);
@@ -489,6 +529,7 @@ void wifiConfigLoop()
       stopAP(); // stopAP() calls MDNS.end()
       s_state = WIFI_STATE_STA_CONNECTED;
       MDNS.begin("telemeter");
+      startNtp();
       logAsync("[WIFI] STA connected | IP: %s | RSSI: %d dBm\n",
                WiFi.localIP().toString().c_str(), WiFi.RSSI());
       logAsync("[WIFI] mDNS: http://telemeter.local\n");
@@ -505,12 +546,34 @@ void wifiConfigLoop()
     if (WiFi.status() != WL_CONNECTED)
     {
       s_staConnected = false;
+      stopNtp();
       MDNS.end();
       startAP();
       s_state = WIFI_STATE_AP_ACTIVE;
       logAsync("[WIFI] STA dropped - AP restored as fallback\n");
       // setAutoReconnect(true) is still set; SDK will reconnect in background
       // and AP_ACTIVE case below will promote back to STA_CONNECTED.
+      break;
+    }
+    // NTP sync polling — check every 2s until first sync, then re-anchor hourly
+    {
+      uint32_t now_ms   = millis();
+      uint32_t poll_iv  = s_ntpSynced ? NTP_RESYNC_MS : NTP_POLL_MS;
+      if (now_ms - s_ntpLastCheck >= poll_iv)
+      {
+        s_ntpLastCheck = now_ms;
+        struct tm ti;
+        if (getLocalTime(&ti, 0))
+        {
+          bool first = !s_ntpSynced;
+          setGatewayTime((uint8_t)ti.tm_hour, (uint8_t)ti.tm_min, (uint8_t)ti.tm_sec);
+          s_ntpSynced = true;
+          if (first)
+            logAsync("[WIFI] NTP synced: %02d:%02d:%02d (UTC%+d)\n",
+                     ti.tm_hour, ti.tm_min, ti.tm_sec,
+                     (int)(NTP_UTC_OFFSET_SEC / 3600));
+        }
+      }
     }
     break;
 
@@ -522,6 +585,7 @@ void wifiConfigLoop()
       stopAP(); // stopAP() calls MDNS.end()
       s_state = WIFI_STATE_STA_CONNECTED;
       MDNS.begin("telemeter");
+      startNtp();
       logAsync("[WIFI] Auto-reconnected | IP: %s\n",
                WiFi.localIP().toString().c_str());
       logAsync("[WIFI] mDNS: http://telemeter.local\n");
@@ -532,5 +596,25 @@ void wifiConfigLoop()
 
 bool wifiIsApActive()     { return s_apActive; }
 bool wifiIsStaConnected() { return s_staConnected; }
+bool wifiIsNtpSynced()    { return s_ntpSynced; }
+
+void wifiSetTzOffset(int32_t offsetSec)
+{
+  nvsSaveTzOffset(offsetSec);
+  if (s_staConnected)
+  {
+    // Reconfigure NTP with new timezone immediately; next 2s poll will re-anchor
+    configTime(offsetSec, 0, NTP_SERVER);
+    s_ntpSynced    = false;
+    s_ntpLastCheck = millis();
+    logAsync("[WIFI] Timezone updated: UTC%+d — resyncing NTP\n",
+             (int)(offsetSec / 3600));
+  }
+  else
+  {
+    logAsync("[WIFI] Timezone saved: UTC%+d (applied on next STA connect)\n",
+             (int)(offsetSec / 3600));
+  }
+}
 
 void wifiHandleCatchAll(AsyncWebServerRequest *req) { handleCatchAll(req); }

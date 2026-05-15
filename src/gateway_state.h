@@ -84,7 +84,7 @@ extern uint16_t          g_sfCount;
 extern uint8_t           g_slotMask;
 extern uint8_t           g_networkEpoch;  // incremented on every node eviction; sent in BeaconPacket.epoch
 
-// Gateway clock (no NTP — set via /api/time or WebSocket set_time)
+// Gateway clock — NTP-synced in STA mode; falls back to set_time WS / /api/time in AP mode
 extern uint8_t           g_gwHour;
 extern uint8_t           g_gwMinute;
 extern uint8_t           g_gwSecond;

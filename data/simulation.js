@@ -42,9 +42,23 @@ const SIM_LOGS = [
   ()=>`[GW-UL] Slot1 V=220.4 A=1.234 W=271.9 Wh=8732 RSSI=-72`,
   ()=>`[GW-UL] Slot2 V=219.8 A=3.012 W=660.4 Wh=14201 RSSI=-85`,
   ()=>`[GW-CW] No join requests this window`,
+  ()=>`[GW-CW] JoinReq UID=0xAB12 fw=2`,
+  ()=>`[GW-CW] Assigned slot 3 to UID=0xAB12 epoch=1`,
   ()=>`[WIFI] STA connected | IP: 192.168.1.100 | RSSI: -63 dBm`,
   ()=>`[FRAM] Slot 1: saved label "Refrigerator"`,
   ()=>`[WEB] Server started on port 80`,
+  ()=>`[CRYPTO] Encrypted mode active`,
+  ()=>`[CRYPTO] New key generated: 3F9A1C...`,
+  ()=>`[RFID] PN532 OK (fw=0x07060700, SDA=32 SCL=33)`,
+  ()=>`[RFID] Key written to card (block 4)`,
+  ()=>`[RFID] No card detected (5 s timeout)`,
+  ()=>`[NODE-JOIN] Sent JoinReq UID=0xAB12`,
+  ()=>`[NODE-TDMA] Epoch changed (0->1) - re-registering`,
+  ()=>`[NODE-TX] V=220.1 A=0.548 W=120.7 seq=${simSfCount}`,
+  ()=>`[NODE-DL] Relay manual -> ON`,
+  ()=>`[NODE-SCHED] Schedule active (now=14:00)`,
+  ()=>`[NODE-RTC] Corrected +2 ms`,
+  ()=>`[PZEM] V=220.4 A=1.234 W=271.9 Hz=60.0 PF=0.88`,
 ];
 
 function randomOfflineDelay(){ return 240 + Math.random() * 480; }
