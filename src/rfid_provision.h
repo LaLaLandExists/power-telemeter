@@ -8,8 +8,8 @@
  * Node role:    reads the 16-byte AES key from the card and passes it to cryptoSetKey().
  *
  * Hardware: PN532 in I2C mode.
- *   Gateway: SDA=32, SCL=33 (shared I2C bus with FRAM; PN532 addr=0x48, FRAM addr=0x50)
- *   Node:    SDA=4,  SCL=26  (dedicated I2C bus; PN532_SDA/PN532_SCL from build flags)
+ *   Gateway: SDA=16, SCL=17 (shared I2C bus with FRAM; PN532 addr=0x48, FRAM addr=0x50)
+ *   Node:    SDA=16, SCL=17  (shared layout with gateway; GPIO16=RX2, GPIO17=TX2)
  *
  * MIFARE Classic key storage: sector 1 block 4, default Key A (0xFF×6).
  */

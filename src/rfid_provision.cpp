@@ -13,20 +13,20 @@
 #include <string.h>
 
 // PN532 I2C pins differ by role and board.
-// Gateway:           shares existing FRAM bus (SDA=32 SCL=33); PN532 addr 0x48 != FRAM 0x50.
-// Node (ESP32-dev):  dedicated bus on free GPIOs (SDA=4 SCL=26).
+// Gateway:           shares existing FRAM bus (SDA=16 SCL=17); PN532 addr 0x48 != FRAM 0x50.
+// Node (ESP32-dev):  shared layout with gateway (SDA=16 SCL=17).
 // Node (S3 Super Mini): dedicated bus on THT GPIOs (SDA=1 SCL=2).
 #ifdef NODE_GATEWAY
-  #define PN532_SDA       32
-  #define PN532_SCL       33
+  #define PN532_SDA       16
+  #define PN532_SCL       17
   #define PN532_IRQ_DUMMY 35
 #elif defined(NODE_TELEMETRY) && defined(BOARD_S3_SUPERMINI)
   #define PN532_SDA       1
   #define PN532_SCL       2
   #define PN532_IRQ_DUMMY 8    // freed by LoRa pin assignment; dummy only — not physically wired
 #elif defined(NODE_TELEMETRY)
-  #define PN532_SDA       4
-  #define PN532_SCL       26
+  #define PN532_SDA       16
+  #define PN532_SCL       17
   #define PN532_IRQ_DUMMY 35
 #else
   #error "rfid_provision: role not defined — set NODE_GATEWAY or NODE_TELEMETRY"

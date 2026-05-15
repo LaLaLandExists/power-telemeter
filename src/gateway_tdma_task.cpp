@@ -71,7 +71,7 @@ static int16_t rxWindow(uint8_t* buf, size_t maxLen, uint32_t windowMs) {
     // radio.available() relies on the DIO0 ISR; also poll the pin directly as a
     // fallback for marginal breadboard contacts that pass level-read but miss edges.
     bool pktReady = radio.available() ||
-                    (digitalRead(14) && radio.getPacketLength() > 0); // 14 = LORA_PIN_DIO0
+                    (digitalRead(2) && radio.getPacketLength() > 0); // 2 = LORA_PIN_DIO0
     if (pktReady) {
       int len = radio.getPacketLength();
       if (len > 0 && (size_t)len <= maxLen) {

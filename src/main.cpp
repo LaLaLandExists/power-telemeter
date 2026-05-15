@@ -44,11 +44,9 @@
  *
  * -- Hardware ------------------------------------------------------------------
  *
- *   SX1278 (VSPI - identical on both roles):
- *     NSS  -> GPIO5    SCK  -> GPIO21
- *     MISO -> GPIO19   MOSI -> GPIO18
- *     DIO0 -> GPIO14   RST  -> GPIO13
- *     DIO1 -> GPIO27 (tie to GND if unused)
+ *   SX1278 (VSPI):
+ *     Gateway:  NSS=26  MOSI=27  MISO=14  SCK=13  DIO0=2   RST=4
+ *     Node:     NSS=5   MOSI=18  MISO=19  SCK=21  DIO0=14  RST=13  DIO1=27
  *
  *   Gateway only:
  *     WiFi + LittleFS (index.html + wifi_config.html in data/ folder)
@@ -114,13 +112,20 @@
   #define LORA_PIN_RST    9
   #define LORA_PIN_DIO1   RADIOLIB_NC
 #else
-  #define LORA_PIN_NSS    5
-  #define LORA_PIN_MOSI   18
-  #define LORA_PIN_MISO   19
-  #define LORA_PIN_SCK    21
-  #define LORA_PIN_DIO0   14
-  #define LORA_PIN_RST    13
-  #define LORA_PIN_DIO1   27   // Tie to GND if unused
+  // ESP32-dev (gateway + non-S3 node, shared layout)
+  #define LORA_PIN_NSS    26
+  #define LORA_PIN_MOSI   27
+  #define LORA_PIN_MISO   14
+  #define LORA_PIN_SCK    13
+  #define LORA_PIN_DIO0   2
+  #define LORA_PIN_RST    4
+  #define LORA_PIN_DIO1   RADIOLIB_NC  // DIO1 unused; GPIO27 occupied by MOSI
+#endif
+
+// Gateway I2C bus (FRAM MB85RC256V + PN532, shared)
+#ifdef NODE_GATEWAY
+  #define GW_FRAM_SDA     16   // GPIO16 = UART2 RX
+  #define GW_FRAM_SCL     17   // GPIO17 = UART2 TX
 #endif
 
 // --- Role-specific pin definitions -------------------------------------------
@@ -221,10 +226,10 @@ void setup() {
     }
   }
 
-  // -- FRAM (MB85RC256V, SDA=32, SCL=33, addr=0x50) -------------------------
+  // -- FRAM (MB85RC256V, SDA=GW_FRAM_SDA, SCL=GW_FRAM_SCL, addr=0x50) -------
   // framLoadAll() is called before the TDMA task starts so no mutex is needed.
-  // framInit() internally calls Wire.begin(32, 33).
-  if (!framInit(32, 33, 0x50)) {
+  // framInit() internally calls Wire.begin(GW_FRAM_SDA, GW_FRAM_SCL).
+  if (!framInit(GW_FRAM_SDA, GW_FRAM_SCL, 0x50)) {
     logAsync("[FRAM] Init FAILED - energy/history persistence disabled\n");
   } else {
     logAsync("[FRAM] OK\n");
@@ -236,8 +241,8 @@ void setup() {
   // cryptoLoadKey() tries NVS; if missing, generate a fresh random key so the
   // gateway is self-contained out of the box.  rfidProvisionInit() prepares the
   // PN532 for web-triggered card writes (POST /api/provision).
-  // Wire (SDA=32, SCL=33) is already up from framInit(); rfidProvisionInit()
-  // calls Wire.begin() again with the same pins — safe and idempotent.
+  // Wire (SDA=GW_FRAM_SDA, SCL=GW_FRAM_SCL) is already up from framInit();
+  // rfidProvisionInit() calls Wire.begin() again with the same pins — safe and idempotent.
 #ifdef PKT_ENCRYPTION
   if (!cryptoLoadKey()) {
     cryptoGenerateKey();
