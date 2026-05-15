@@ -752,6 +752,12 @@ static void handleGetProvisionStatus(AsyncWebServerRequest* req) {
   req->send(200, "application/json", json);
 }
 
+static void handlePostKeyRegen(AsyncWebServerRequest* req) {
+  cryptoGenerateKey();
+  logAsync("[WEB] Network key regenerated via dashboard\n");
+  req->send(200, "application/json", "{\"ok\":true}");
+}
+
 #endif // PKT_ENCRYPTION
 
 // -----------------------------------------------------------------------------
@@ -808,10 +814,11 @@ void webServerSetup()
     xTaskCreate(rebootTask, "reboot", 1024, nullptr, 1, nullptr);
   });
 
-  // -- RFID provisioning (encrypted builds only) ----------------------------
+  // -- RFID provisioning + key management (encrypted builds only) -----------
 #ifdef PKT_ENCRYPTION
   server.on("/api/provision",        HTTP_POST, handlePostProvision);
   server.on("/api/provision/status", HTTP_GET,  handleGetProvisionStatus);
+  server.on("/api/keygen",           HTTP_POST, handlePostKeyRegen);
 #endif
 
   // -- WiFi config routes (scan, connect, status, etc.) ---------------------

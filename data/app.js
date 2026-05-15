@@ -413,6 +413,19 @@ function showConfirm(id){$(id).classList.add('show');}
 function hideConfirm(id){$(id).classList.remove('show');}
 function execClearEnergy(){hideConfirm('cfmEnergy');wsSend({cmd:'clear_energy',node:cNid});}
 function execClearAllEnergy(){hideConfirm('cfmAllEnergy');wsSend({cmd:'clear_all_energy'});}
+async function execKeyRegen(){
+  hideConfirm('cfmKeyRegen');
+  const st=$('provStatus');
+  if(st){st.style.color='var(--txd)';st.textContent='Regenerating…';}
+  try{
+    const r=await fetch('/api/keygen',{method:'POST'});
+    const d=await r.json();
+    if(st){st.style.color=d.ok?'var(--ac)':'var(--dg)';st.textContent=d.ok?'New key generated':'Failed';}
+  }catch(e){
+    if(st){st.style.color='var(--dg)';st.textContent='Request failed';}
+  }
+  setTimeout(()=>{if(st)st.textContent='';},3000);
+}
 
 /* -- Nudge ------------------------------------------------------- */
 function doNudge(nodeId,ev){
