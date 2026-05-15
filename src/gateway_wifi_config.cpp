@@ -18,6 +18,7 @@
 #include "gateway_wifi_config.h"
 #include "gateway_state.h"
 #include "log_async.h"
+#include "tdma_protocol.h"
 
 #include <WiFi.h>
 #include <ESPmDNS.h>
@@ -40,6 +41,8 @@ static bool      s_apActive     = false;
 static bool      s_staConnected = false;
 static bool      s_apEventRegistered = false; // guard: register AP_START handler once
 static DNSServer s_dns;
+static char      s_apSsid[32]   = {};   // "PowerTelemeter_XXXX", built at boot
+static String    s_apPassword   = "";   // empty = open network
 
 // -- NTP state ---------------------------------------------------------------------------------
 #define NTP_POLL_MS    2000UL       // poll interval while waiting for first sync
@@ -103,17 +106,48 @@ static void nvsSave(const String &ssid, const String &pass)
   p.end();
 }
 
+// Clears only STA credentials; intentionally preserves "appass" and "tzoff".
 static void nvsClear()
 {
   Preferences p;
   p.begin("wifi-cfg", false);
-  p.clear();
+  p.remove("ssid");
+  p.remove("pass");
+  p.remove("sip");
+  p.remove("sgw");
+  p.remove("ssn");
+  p.remove("sdns");
+  p.end();
+}
+
+static String nvsLoadApPassword()
+{
+  Preferences p;
+  p.begin("wifi-cfg", true);
+  String pw = p.getString("appass", "");
+  p.end();
+  return pw;
+}
+
+static void nvsSaveApPassword(const String &pw)
+{
+  Preferences p;
+  p.begin("wifi-cfg", false);
+  p.putString("appass", pw);
   p.end();
 }
 
 void wifiClearCredentials()
 {
   nvsClear();
+}
+
+void wifiFactoryResetNvs()
+{
+  Preferences p;
+  p.begin("wifi-cfg", false);
+  p.clear();
+  p.end();
 }
 
 // Static IP NVS — keys sip/sgw/ssn/sdns; all empty = DHCP
@@ -167,12 +201,13 @@ static void startAP()
 
   WiFi.enableAP(true);
   WiFi.softAPConfig(AP_IP, AP_IP, AP_SUBNET);
-  bool ok = WiFi.softAP(CONFIG_AP_SSID); // open network
+  const char* pw = s_apPassword.isEmpty() ? nullptr : s_apPassword.c_str();
+  bool ok = WiFi.softAP(s_apSsid, pw);
   s_apActive = true;
   s_dns.setErrorReplyCode(DNSReplyCode::NoError);
   s_dns.start(DNS_PORT, "*", AP_IP);
   logAsync("[WIFI] AP %s · SSID: %s · IP: %s\n",
-           ok ? "UP" : "FAIL", CONFIG_AP_SSID,
+           ok ? "UP" : "FAIL", s_apSsid,
            WiFi.softAPIP().toString().c_str());
   configASSERT(ok);
 }
@@ -223,7 +258,7 @@ static void handleInfo(AsyncWebServerRequest *req)
 {
   JsonDocument doc;
   doc["version"]      = FW_VERSION_STR;
-  doc["apSsid"]       = CONFIG_AP_SSID;
+  doc["apSsid"]       = s_apSsid;
   doc["apIp"]         = AP_IP.toString();
   doc["apActive"]     = s_apActive;
   doc["staConnected"] = s_staConnected;
@@ -461,6 +496,44 @@ static void handleClearStaticIp(AsyncWebServerRequest *req)
   req->send(200, "application/json", "{\"ok\":true}");
 }
 
+// GET /api/ap — returns SSID and whether a password is currently set
+static void handleGetAp(AsyncWebServerRequest *req)
+{
+  JsonDocument doc;
+  doc["ssid"]        = s_apSsid;
+  doc["hasPassword"] = !s_apPassword.isEmpty();
+  String body;
+  serializeJson(doc, body);
+  req->send(200, "application/json", body);
+}
+
+// POST /api/ap — body: password=<string> (blank = open network, min 8 chars if non-empty)
+static void handleSetAp(AsyncWebServerRequest *req)
+{
+  String pass = "";
+  if (req->hasParam("password", true))
+    pass = req->getParam("password", true)->value();
+  pass.trim();
+
+  if (!pass.isEmpty() && pass.length() < 8) {
+    req->send(400, "application/json",
+              "{\"ok\":false,\"message\":\"Minimum 8 characters\"}");
+    return;
+  }
+
+  nvsSaveApPassword(pass);
+  s_apPassword = pass;
+
+  // Restart AP immediately so the new password takes effect now.
+  if (s_apActive) {
+    stopAP();
+    startAP();
+  }
+
+  logAsync("[WIFI] AP password %s\n", pass.isEmpty() ? "cleared (open)" : "updated");
+  req->send(200, "application/json", "{\"ok\":true}");
+}
+
 /** Catch-all — redirects OS captive-portal probes to the config page.
  *  Only redirects when AP is active; falls through to 404 otherwise. */
 static void handleCatchAll(AsyncWebServerRequest *req)
@@ -475,6 +548,11 @@ static void handleCatchAll(AsyncWebServerRequest *req)
 
 void wifiConfigBegin()
 {
+  // Build device-unique SSID from CRC-16/CCITT of eFuse MAC.
+  uint16_t uid = computeDeviceUID();
+  snprintf(s_apSsid, sizeof(s_apSsid), "PowerTelemeter_%04X", uid);
+  s_apPassword = nvsLoadApPassword();
+
   // Check force-AP pin (hold GPIO0 / BOOT button at power-on to skip saved creds)
   pinMode(CONFIG_PIN, INPUT);
   delay(50);
@@ -513,6 +591,8 @@ void wifiRegisterRoutes(AsyncWebServer &server)
   server.on("/api/staticip",        HTTP_GET,  handleGetStaticIp);
   server.on("/api/staticip",        HTTP_POST, handleSetStaticIp);
   server.on("/api/staticip/clear",  HTTP_GET,  handleClearStaticIp);
+  server.on("/api/ap",              HTTP_GET,  handleGetAp);
+  server.on("/api/ap",              HTTP_POST, handleSetAp);
   logAsync("[WIFI] Config routes registered\n");
 }
 
@@ -597,6 +677,7 @@ void wifiConfigLoop()
 bool wifiIsApActive()     { return s_apActive; }
 bool wifiIsStaConnected() { return s_staConnected; }
 bool wifiIsNtpSynced()    { return s_ntpSynced; }
+const char* wifiGetApSsid() { return s_apSsid; }
 
 void wifiSetTzOffset(int32_t offsetSec)
 {

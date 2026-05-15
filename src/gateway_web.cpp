@@ -36,6 +36,7 @@
 #include <LittleFS.h>
 #include <ArduinoJson.h>
 #include <WiFi.h>
+#include <Preferences.h>
 #include <freertos/FreeRTOS.h>
 #include <freertos/task.h>
 #include <freertos/queue.h>
@@ -44,8 +45,70 @@
 static AsyncWebServer server(80);
 static AsyncWebSocket ws("/ws");
 
+// -- Dashboard auth -----------------------------------------------------------
+static String   s_dashPassword   = "";       // empty = no auth required
+static char     s_sessionToken[33] = {};     // 32-char hex + null; empty = no session
+
+static uint32_t s_authWsIds[8]   = {};
+static uint8_t  s_authWsCount    = 0;
+
 // -- WS broadcast queue (uint8_t slotIdx, depth 16) ---------------------------
 static QueueHandle_t s_wsBroadcastQueue = nullptr;
+
+// =================================================
+// Auth — NVS, token, session helpers
+// =================================================
+
+static String nvsDashPassLoad() {
+  Preferences p;
+  p.begin("wifi-cfg", true);
+  String pw = p.getString("dashpass", "");
+  p.end();
+  return pw;
+}
+
+static void nvsDashPassSave(const String &pw) {
+  Preferences p;
+  p.begin("wifi-cfg", false);
+  p.putString("dashpass", pw);
+  p.end();
+}
+
+static void generateToken() {
+  for (int i = 0; i < 4; i++) {
+    uint32_t r = esp_random();
+    snprintf(s_sessionToken + i * 8, 9, "%08lx", (unsigned long)r);
+  }
+}
+
+static bool webCheckAuth(AsyncWebServerRequest *req) {
+  if (s_dashPassword.isEmpty()) return true;
+  if (s_sessionToken[0] == '\0') return false;
+  if (!req->hasHeader("X-Auth-Token")) return false;
+  return req->header("X-Auth-Token") == s_sessionToken;
+}
+
+static void wsAuthAdd(uint32_t id) {
+  for (uint8_t i = 0; i < s_authWsCount; i++)
+    if (s_authWsIds[i] == id) return;
+  if (s_authWsCount < 8) s_authWsIds[s_authWsCount++] = id;
+}
+
+static void wsAuthRemove(uint32_t id) {
+  for (uint8_t i = 0; i < s_authWsCount; i++) {
+    if (s_authWsIds[i] == id) {
+      s_authWsIds[i] = s_authWsIds[--s_authWsCount];
+      return;
+    }
+  }
+}
+
+static bool wsIsAuth(uint32_t id) {
+  if (s_dashPassword.isEmpty()) return true;
+  for (uint8_t i = 0; i < s_authWsCount; i++)
+    if (s_authWsIds[i] == id) return true;
+  return false;
+}
 
 // =================================================
 // JSON helpers — build node objects from NodeState
@@ -236,6 +299,30 @@ static void buildNodesDoc(JsonDocument &doc)
 // ----------------------------------------------------------------------------
 static void handleWsMessage(AsyncWebSocketClient *client, const String &payload)
 {
+  // Auth gate — unauthenticated clients may only send cmd:"auth"
+  if (!wsIsAuth(client->id())) {
+    JsonDocument auth_doc;
+    if (deserializeJson(auth_doc, payload) == DeserializationError::Ok) {
+      const char *cmd = auth_doc["cmd"] | "";
+      if (strcmp(cmd, "auth") == 0) {
+        const char *tok = auth_doc["token"] | "";
+        bool ok = s_dashPassword.isEmpty()
+                  || (s_sessionToken[0] && strcmp(tok, s_sessionToken) == 0);
+        if (ok) {
+          wsAuthAdd(client->id());
+          client->text("{\"type\":\"auth\",\"ok\":true}");
+        } else {
+          client->text("{\"type\":\"auth\",\"ok\":false}");
+          client->close();
+        }
+        return;
+      }
+    }
+    client->text("{\"type\":\"auth\",\"ok\":false}");
+    client->close();
+    return;
+  }
+
   JsonDocument doc;
   if (deserializeJson(doc, payload) != DeserializationError::Ok)
     return;
@@ -465,14 +552,17 @@ static void onWsEvent(AsyncWebSocket * /*server*/, AsyncWebSocketClient *client,
   {
     logAsync("[WS] Client #%u connected from %s\n",
              client->id(), client->remoteIP().toString().c_str());
-    // Push full node list immediately on connect
-    JsonDocument doc;
-    buildNodesDoc(doc);
-    wsSendToClient(client, doc);
+    // If no password, auto-authenticate and push node list immediately
+    if (s_dashPassword.isEmpty()) {
+      wsAuthAdd(client->id());
+      client->text("{\"type\":\"auth\",\"ok\":true}");
+    }
+    // Else: client must send {cmd:"auth",token:"..."} first
   }
   else if (type == WS_EVT_DISCONNECT)
   {
     logAsync("[WS] Client #%u disconnected\n", client->id());
+    wsAuthRemove(client->id());
   }
   else if (type == WS_EVT_DATA)
   {
@@ -492,6 +582,7 @@ static void onWsEvent(AsyncWebSocket * /*server*/, AsyncWebSocketClient *client,
 /** GET /api/nodes */
 static void handleGetNodes(AsyncWebServerRequest *req)
 {
+  if (!webCheckAuth(req)) { req->send(401, "application/json", "{\"error\":\"unauthorized\"}"); return; }
   JsonDocument doc;
   JsonArray arr = doc["nodes"].to<JsonArray>();
   int count = 0;
@@ -524,6 +615,7 @@ static void handleGetNodes(AsyncWebServerRequest *req)
 /** GET /api/node/{id}/live */
 static void handleGetNodeLive(AsyncWebServerRequest *req)
 {
+  if (!webCheckAuth(req)) { req->send(401, "application/json", "{\"error\":\"unauthorized\"}"); return; }
   int nodeId = parseNodeIdFromPath(req->url());
   if (nodeId < 1 || nodeId > MAX_NODES)
   {
@@ -554,6 +646,7 @@ static void handleGetNodeLive(AsyncWebServerRequest *req)
 /** GET /api/node/{id}/history */
 static void handleGetNodeHistory(AsyncWebServerRequest *req)
 {
+  if (!webCheckAuth(req)) { req->send(401, "application/json", "{\"error\":\"unauthorized\"}"); return; }
   int nodeId = parseNodeIdFromPath(req->url());
   if (nodeId < 1 || nodeId > MAX_NODES)
   {
@@ -597,6 +690,7 @@ static void handleGetNodeHistory(AsyncWebServerRequest *req)
 /** POST /api/node/{id}/relay  body: state=0|1 */
 static void handlePostNodeRelay(AsyncWebServerRequest *req)
 {
+  if (!webCheckAuth(req)) { req->send(401, "application/json", "{\"error\":\"unauthorized\"}"); return; }
   int nodeId = parseNodeIdFromPath(req->url());
   if (!req->hasParam("state", true))
   {
@@ -617,6 +711,7 @@ static void handlePostNodeRelay(AsyncWebServerRequest *req)
 /** POST /api/node/{id}/name  body: name=<string> */
 static void handlePostNodeName(AsyncWebServerRequest *req)
 {
+  if (!webCheckAuth(req)) { req->send(401, "application/json", "{\"error\":\"unauthorized\"}"); return; }
   int nodeId = parseNodeIdFromPath(req->url());
   if (!req->hasParam("name", true))
   {
@@ -656,6 +751,7 @@ static void handlePostNodeName(AsyncWebServerRequest *req)
 /** POST /api/time  body: hour=H&minute=M&second=S */
 static void handlePostTime(AsyncWebServerRequest *req)
 {
+  if (!webCheckAuth(req)) { req->send(401, "application/json", "{\"error\":\"unauthorized\"}"); return; }
   char timeBuf[9];
   if (wifiIsNtpSynced())
   {
@@ -693,6 +789,7 @@ static void handlePostTime(AsyncWebServerRequest *req)
 /** GET /api/status */
 static void handleGetStatus(AsyncWebServerRequest *req)
 {
+  if (!webCheckAuth(req)) { req->send(401, "application/json", "{\"error\":\"unauthorized\"}"); return; }
   JsonDocument doc;
   char timeBuf[9];
   gwTimeString(timeBuf);
@@ -716,7 +813,7 @@ static void handleGetStatus(AsyncWebServerRequest *req)
   doc["apActive"]  = wifiIsApActive();
   doc["version"]   = FW_VERSION_STR;
   doc["wifiMode"]  = wifiIsApActive() ? "ap" : "sta";
-  doc["ssid"]      = wifiIsApActive() ? CONFIG_AP_SSID : WiFi.SSID();
+  doc["ssid"]      = wifiIsApActive() ? wifiGetApSsid() : WiFi.SSID();
 
   String json;
   serializeJson(doc, json);
@@ -766,6 +863,7 @@ static void provisionWriteTask(void* /*params*/) {
 }
 
 static void handlePostProvision(AsyncWebServerRequest* req) {
+  if (!webCheckAuth(req)) { req->send(401, "application/json", "{\"error\":\"unauthorized\"}"); return; }
   if (s_provState == RFID_PENDING) {
     req->send(409, "application/json", "{\"error\":\"already in progress\"}");
     return;
@@ -776,6 +874,7 @@ static void handlePostProvision(AsyncWebServerRequest* req) {
 }
 
 static void handleGetProvisionStatus(AsyncWebServerRequest* req) {
+  if (!webCheckAuth(req)) { req->send(401, "application/json", "{\"error\":\"unauthorized\"}"); return; }
   JsonDocument doc;
   switch (s_provState) {
     case RFID_IDLE:    doc["status"] = "idle";    break;
@@ -800,6 +899,7 @@ static void keyRegenTask(void* /*params*/) {
 }
 
 static void handlePostKeyRegen(AsyncWebServerRequest* req) {
+  if (!webCheckAuth(req)) { req->send(401, "application/json", "{\"error\":\"unauthorized\"}"); return; }
   if (s_keyRegenPending) {
     req->send(409, "application/json", "{\"error\":\"already in progress\"}");
     return;
@@ -810,6 +910,66 @@ static void handlePostKeyRegen(AsyncWebServerRequest* req) {
 }
 
 #endif // PKT_ENCRYPTION
+
+// -----------------------------------------------------------------------------
+// Auth endpoints
+// -----------------------------------------------------------------------------
+
+/** POST /api/login  (public) */
+static void handlePostLogin(AsyncWebServerRequest *req) {
+  String pass = req->hasParam("password", true)
+                ? req->getParam("password", true)->value() : "";
+  if (s_dashPassword.isEmpty() || pass == s_dashPassword) {
+    generateToken();
+    String body = "{\"ok\":true,\"token\":\"";
+    body += s_sessionToken;
+    body += "\"}";
+    req->send(200, "application/json", body);
+  } else {
+    memset(s_sessionToken, 0, sizeof(s_sessionToken));
+    req->send(401, "application/json", "{\"ok\":false}");
+  }
+}
+
+/** GET /api/logout  (public) */
+static void handleGetLogout(AsyncWebServerRequest *req) {
+  memset(s_sessionToken, 0, sizeof(s_sessionToken));
+  s_authWsCount = 0;
+  req->send(200, "application/json", "{\"ok\":true}");
+}
+
+/** GET /api/authstatus  (public — tells JS whether login is required) */
+static void handleGetAuthStatus(AsyncWebServerRequest *req) {
+  String body = "{\"hasPassword\":";
+  body += s_dashPassword.isEmpty() ? "false}" : "true}";
+  req->send(200, "application/json", body);
+}
+
+/** GET /api/dashsecure  (protected) */
+static void handleGetDashSecure(AsyncWebServerRequest *req) {
+  if (!webCheckAuth(req)) { req->send(401, "application/json", "{\"error\":\"unauthorized\"}"); return; }
+  String body = "{\"hasPassword\":";
+  body += s_dashPassword.isEmpty() ? "false}" : "true}";
+  req->send(200, "application/json", body);
+}
+
+/** POST /api/dashsecure  (protected) */
+static void handlePostDashSecure(AsyncWebServerRequest *req) {
+  if (!webCheckAuth(req)) { req->send(401, "application/json", "{\"error\":\"unauthorized\"}"); return; }
+  String pass = req->hasParam("password", true)
+                ? req->getParam("password", true)->value() : "";
+  pass.trim();
+  if (!pass.isEmpty() && pass.length() < 8) {
+    req->send(400, "application/json", "{\"ok\":false,\"message\":\"Minimum 8 characters\"}");
+    return;
+  }
+  nvsDashPassSave(pass);
+  s_dashPassword = pass;
+  memset(s_sessionToken, 0, sizeof(s_sessionToken));
+  s_authWsCount = 0;
+  logAsync("[WEB] Dashboard password %s\n", pass.isEmpty() ? "cleared" : "updated");
+  req->send(200, "application/json", "{\"ok\":true}");
+}
 
 // -----------------------------------------------------------------------------
 // Gateway reboot
@@ -825,9 +985,19 @@ static void rebootTask(void* /*params*/) {
 // -----------------------------------------------------------------------------
 void webServerSetup()
 {
+  // Load dashboard password from NVS
+  s_dashPassword = nvsDashPassLoad();
+
   // WebSocket handler
   ws.onEvent(onWsEvent);
   server.addHandler(&ws);
+
+  // Auth routes (public — no webCheckAuth guard)
+  server.on("/api/login",      HTTP_POST, handlePostLogin);
+  server.on("/api/logout",     HTTP_GET,  handleGetLogout);
+  server.on("/api/authstatus", HTTP_GET,  handleGetAuthStatus);
+  server.on("/api/dashsecure", HTTP_GET,  handleGetDashSecure);
+  server.on("/api/dashsecure", HTTP_POST, handlePostDashSecure);
 
   // REST routes
   server.on("/api/nodes", HTTP_GET, handleGetNodes);
@@ -836,19 +1006,20 @@ void webServerSetup()
 
   // Per-node routes — match on prefix, dispatch on action suffix
   server.on("/api/node", HTTP_ANY, [](AsyncWebServerRequest *req) {
+    // Auth checked inside each individual handler
     String path = req->url();
-    // Determine action from suffix
     bool isPost = (req->method() == HTTP_POST);
 
     if      (path.endsWith("/live"))    handleGetNodeLive(req);
     else if (path.endsWith("/history")) handleGetNodeHistory(req);
     else if (path.endsWith("/relay") && isPost)  handlePostNodeRelay(req);
     else if (path.endsWith("/name")  && isPost)  handlePostNodeName(req);
-    else req->send(404, "application/json", "{\"error\":\"not found\"}"); 
+    else req->send(404, "application/json", "{\"error\":\"not found\"}");
   });
 
   // -- Feature flags — lets the dashboard adapt without separate builds -------
   server.on("/api/features", HTTP_GET, [](AsyncWebServerRequest* req) {
+    if (!webCheckAuth(req)) { req->send(401, "application/json", "{\"error\":\"unauthorized\"}"); return; }
     req->send(200, "application/json",
       "{\"encryption\":"
 #ifdef PKT_ENCRYPTION
@@ -861,6 +1032,7 @@ void webServerSetup()
 
   // -- Reboot ----------------------------------------------------------------
   server.on("/api/reboot", HTTP_POST, [](AsyncWebServerRequest* req) {
+    if (!webCheckAuth(req)) { req->send(401, "application/json", "{\"error\":\"unauthorized\"}"); return; }
     req->send(200, "application/json", "{\"status\":\"rebooting\"}");
     xTaskCreate(rebootTask, "reboot", 1024, nullptr, 1, nullptr);
   });
@@ -893,7 +1065,7 @@ void webServerSetup()
   // CORS headers on all responses
   DefaultHeaders::Instance().addHeader("Access-Control-Allow-Origin", "*");
   DefaultHeaders::Instance().addHeader("Access-Control-Allow-Methods", "GET,POST,OPTIONS");
-  DefaultHeaders::Instance().addHeader("Access-Control-Allow-Headers", "Content-Type");
+  DefaultHeaders::Instance().addHeader("Access-Control-Allow-Headers", "Content-Type, X-Auth-Token");
 
   // Catch-all: OPTIONS pre-flight + captive-portal redirect when AP is active
   server.onNotFound([](AsyncWebServerRequest *req) {
@@ -901,7 +1073,7 @@ void webServerSetup()
       AsyncWebServerResponse *resp = req->beginResponse(204);
       resp->addHeader("Access-Control-Allow-Origin",  "*");
       resp->addHeader("Access-Control-Allow-Methods", "GET,POST,OPTIONS");
-      resp->addHeader("Access-Control-Allow-Headers", "Content-Type");
+      resp->addHeader("Access-Control-Allow-Headers", "Content-Type, X-Auth-Token");
       req->send(resp);
     } else {
       // Redirect OS captive-portal probes to dashboard when AP on

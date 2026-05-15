@@ -114,3 +114,10 @@ void framQueueSave(uint8_t nodeIdx, bool saveEnergy, bool saveHistory);
  * @param nodeIdx  0-based node index (0–7)
  */
 void framQueueRestore(uint8_t nodeIdx);
+
+/**
+ * Synchronously invalidate the FRAM magic so the next boot treats the chip
+ * as blank (all node data wiped). Call immediately before ESP.restart().
+ * No-op if framInit() never succeeded.
+ */
+void framErase();

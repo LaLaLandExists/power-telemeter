@@ -131,8 +131,9 @@
 // --- Role-specific pin definitions -------------------------------------------
 #ifdef NODE_GATEWAY
   #define GW_BTN_PIN 34   // "The button" — active LOW, external pull-up required
-                          //   short press (< 3 s): reboot
-                          //   long  press (≥ 3 s): forget STA credentials + reboot
+                          //   short press (< 3 s):   reboot
+                          //   long  press (3–10 s):  forget STA credentials + reboot
+                          //   hold  (≥ 10 s):        factory reset (NVS + FRAM + AES key) + reboot
 #endif
 
 #ifdef NODE_TELEMETRY
@@ -178,6 +179,11 @@ SX1278 radio = new Module(LORA_PIN_NSS, LORA_PIN_DIO0, LORA_PIN_RST, LORA_PIN_DI
 #ifdef NODE_GATEWAY
 
 // GPIO 34 is input-only on ESP32 — no internal pull-up; requires external resistor.
+// Press tiers (active LOW):
+//   < 80 ms        — debounce glitch, ignored
+//   80 ms – 3 s    — short press: reboot
+//   3 s – 10 s     — long press: forget STA credentials + reboot
+//   ≥ 10 s         — factory reset: erase all NVS (wifi-cfg) + FRAM + AES key + reboot
 static void btnTask(void*) {
   pinMode(GW_BTN_PIN, INPUT);
   vTaskDelay(pdMS_TO_TICKS(500));  // skip transients during boot
@@ -185,19 +191,26 @@ static void btnTask(void*) {
     if (digitalRead(GW_BTN_PIN) == LOW) {
       uint32_t t0 = millis();
       while (digitalRead(GW_BTN_PIN) == LOW) {
-        if (millis() - t0 >= 3100) break;  // long-press threshold reached
+        if (millis() - t0 >= 10100) break;  // factory reset threshold reached
         vTaskDelay(pdMS_TO_TICKS(20));
       }
       uint32_t held = millis() - t0;
       if (held < 80) { vTaskDelay(pdMS_TO_TICKS(50)); continue; }  // debounce glitch
 
-      if (held >= 3000) {
+      if (held >= 10000) {
+        logAsync("[GW] Button 10 s hold — FACTORY RESET: erasing NVS + FRAM, rebooting\n");
+        wifiFactoryResetNvs();
+        framErase();
+#ifdef PKT_ENCRYPTION
+        cryptoClearKey();
+#endif
+      } else if (held >= 3000) {
         logAsync("[GW] Button long-press — forgetting STA credentials, rebooting\n");
         wifiClearCredentials();
       } else {
         logAsync("[GW] Button press — rebooting\n");
       }
-      vTaskDelay(pdMS_TO_TICKS(200));  // let log drain
+      vTaskDelay(pdMS_TO_TICKS(400));  // let log drain
       ESP.restart();
     }
     vTaskDelay(pdMS_TO_TICKS(20));

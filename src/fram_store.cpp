@@ -369,4 +369,11 @@ void framTaskStart()
   xTaskCreatePinnedToCore(framTask, "FRAM", 2048, nullptr, 0, nullptr, 0);
 }
 
+void framErase()
+{
+  if (!s_framOk) return;
+  s_fram.write32(FRAM_HEADER_BASE, 0x00000000UL);
+  logAsync("[FRAM] Magic erased — chip will reinitialise as blank on next boot\n");
+}
+
 #endif // NODE_GATEWAY

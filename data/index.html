@@ -50,6 +50,32 @@
   </div>
 </header>
 
+<!-- Auth overlay — visible by default; JS hides it after auth check -->
+<div id="authOverlay" style="display:flex;position:fixed;inset:0;z-index:9999;background:var(--bg);align-items:center;justify-content:center">
+  <div style="width:100%;max-width:320px;padding:32px 24px;background:var(--pan);border-radius:10px;box-shadow:0 4px 24px #0004">
+    <div style="display:flex;align-items:center;gap:8px;margin-bottom:4px">
+      <span style="color:var(--ac);display:inline-flex;align-items:center">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/></svg>
+      </span>
+      <span style="font-size:17px;font-weight:700" class="M">PowerTelemetry</span>
+    </div>
+    <div style="font-size:11px;color:var(--txd);margin-bottom:20px" id="authApSsid"></div>
+    <div class="form-group" style="margin-bottom:12px">
+      <label class="form-label">Dashboard Password</label>
+      <div class="pw-wrap">
+        <input class="form-input" type="password" id="loginPwInput"
+               placeholder="Enter password" autocomplete="current-password"
+               spellcheck="false" onkeydown="if(event.key==='Enter')doLogin()">
+        <button class="pw-eye" onclick="loginTogglePw()" type="button">
+          <svg id="loginEyeIco" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg>
+        </button>
+      </div>
+    </div>
+    <button class="btn btn-primary" onclick="doLogin()" style="width:100%">Login</button>
+    <div id="loginHint" style="font-size:10px;color:var(--txd);margin-top:8px;min-height:14px"></div>
+  </div>
+</div>
+
 <div class="wrap">
 
   <!-- -- INDEX VIEW -------------------------------------------- -->
@@ -250,37 +276,17 @@
         </div><!-- /panel-body -->
       </div>
 
-      <!-- Gateway info -->
-      <div class="panel">
-        <div class="panel-head">
-          <span class="panel-title">Gateway</span>
-          <button class="scan-btn M" onclick="doSyncTime()" id="syncBtn">
-            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-.08-4.36"/></svg>
-            Sync Time
-          </button>
-          <span id="gwTimeSrc" class="hdr-badge M ws-ok" style="display:none">NTP</span>
-        </div>
-        <div class="panel-body">
-          <div class="info-grid" style="border:none;margin:0;padding:0">
-            <div class="info-row"><span class="info-lbl">System Time</span><span class="info-val M" id="gwTimeVal">Not synced</span></div>
-            <div class="info-row"><span class="info-lbl">Uptime</span><span class="info-val M" id="gwUptime">--</span></div>
-            <div class="info-row"><span class="info-lbl">Free Heap</span><span class="info-val M" id="gwHeap">--</span></div>
-            <div class="info-row"><span class="info-lbl">Nodes</span><span class="info-val M" id="gwNodes">--</span></div>
-          </div>
-          <div id="gwTimeWarn" style="display:none;margin-top:10px;padding:8px 10px;border-radius:6px;background:rgba(255,159,67,.1);border:1px solid rgba(255,159,67,.25);font-size:10px;color:var(--wn)" class="M">
-            <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" style="margin-right:4px;vertical-align:middle"><path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>
-            Time not synced — schedules unavailable
-          </div>
-        </div>
-      </div>
-
       <!-- Gateway control -->
       <div class="panel" id="gwCtrlPanel">
-        <div class="panel-head">
+        <div class="panel-head" style="padding-bottom:16px">
           <span class="panel-title">Gateway Control</span>
-          <span class="panel-badge M ac" id="encBadge" style="display:none">Encrypted</span>
+          <button class="scan-btn M" id="gwCtrlCfgBtn" onclick="toggleGwCtrlDrawer()">
+            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.07 4.93a10 10 0 0 1 0 14.14"/><path d="M4.93 4.93a10 10 0 0 0 0 14.14"/></svg>
+            Configure
+          </button>
         </div>
-        <div class="panel-body">
+        <div class="wifi-drawer" id="gwCtrlDrawer">
+          <div style="padding:0 16px 16px">
           <div id="provSection" style="display:none">
             <div style="margin-bottom:12px">
               <div style="font-size:10px;color:var(--txd);margin-bottom:8px;line-height:1.6" class="M">
@@ -313,6 +319,74 @@
             </div>
             <div class="divider"></div>
           </div>
+          <!-- AP security -->
+          <div style="margin-bottom:12px">
+            <div style="margin-bottom:6px" class="M">
+              <span style="font-size:11px;font-family:'JetBrains Mono',monospace;color:var(--tx)" id="apSsidName">--</span>
+              <span style="font-size:10px;color:var(--txd);margin-left:5px" id="apSsidStatus"></span>
+            </div>
+            <div class="form-group" style="margin-bottom:6px">
+              <label class="form-label">Access Point Password</label>
+              <div class="pw-wrap">
+                <input class="form-input M" type="password" id="apPwInput"
+                       placeholder="Leave blank for open network"
+                       autocomplete="new-password" spellcheck="false">
+                <button class="pw-eye" onclick="apTogglePw()" type="button">
+                  <svg id="apEyeIco" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg>
+                </button>
+              </div>
+              <div style="font-size:10px;color:var(--txd);margin-top:3px" id="apPwHint">Minimum 8 characters · leave blank for open network</div>
+            </div>
+            <div class="confirm-wrap">
+              <button class="btn btn-safe M" onclick="apSavePassword()" style="margin-top:0;font-size:11px">
+                <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z"/><polyline points="17 21 17 13 7 13 7 21"/><polyline points="7 3 7 8 15 8"/></svg>
+                Save AP Password
+              </button>
+              <div class="confirm M" id="cfmApPw" style="border-color:rgba(0,229,160,.4)">
+                <span class="confirm-msg">Update AP password? Clients will need to reconnect.</span>
+                <button class="confirm-y" style="background:var(--ac);color:var(--bg)" onclick="execApSavePassword()">Yes</button>
+                <button class="confirm-n" onclick="hideConfirm('cfmApPw')">No</button>
+              </div>
+            </div>
+          </div>
+          <!-- Dashboard security -->
+          <div style="margin-bottom:12px">
+            <div class="form-group" style="margin-bottom:6px">
+              <label class="form-label">Dashboard Password</label>
+              <div class="pw-wrap">
+                <input class="form-input M" type="password" id="dashPwInput"
+                       placeholder="Leave blank for open access"
+                       autocomplete="new-password" spellcheck="false">
+                <button class="pw-eye" onclick="dashTogglePw()" type="button">
+                  <svg id="dashEyeIco" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg>
+                </button>
+              </div>
+              <div style="font-size:10px;color:var(--txd);margin-top:3px" id="dashPwHint">Minimum 8 characters · leave blank for open access</div>
+            </div>
+            <div class="confirm-wrap">
+              <button class="btn btn-safe M" onclick="dashSavePassword()" style="margin-top:0;font-size:11px">
+                <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z"/><polyline points="17 21 17 13 7 13 7 21"/><polyline points="7 3 7 8 15 8"/></svg>
+                Save Dashboard Password
+              </button>
+              <div class="confirm M" id="cfmDashPw" style="border-color:rgba(0,229,160,.4)">
+                <span class="confirm-msg">Update dashboard password? Your session will be ended.</span>
+                <button class="confirm-y" style="background:var(--ac);color:var(--bg)" onclick="execDashSavePassword()">Yes</button>
+                <button class="confirm-n" onclick="hideConfirm('cfmDashPw')">No</button>
+              </div>
+            </div>
+            <div class="confirm-wrap" id="dashLogoutBtn" style="display:none">
+              <button class="btn btn-danger M" onclick="showConfirm('cfmLogout')" style="margin-top:6px;font-size:11px">
+                <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/><polyline points="16 17 21 12 16 7"/><line x1="21" y1="12" x2="9" y2="12"/></svg>
+                Log Out
+              </button>
+              <div class="confirm M" id="cfmLogout">
+                <span class="confirm-msg">Log out of the dashboard?</span>
+                <button class="confirm-y" onclick="doLogout()">Yes</button>
+                <button class="confirm-n" onclick="hideConfirm('cfmLogout')">No</button>
+              </div>
+            </div>
+          </div>
+          <div class="divider"></div>
           <div class="confirm-wrap">
             <button class="btn btn-danger M" onclick="showConfirm('cfmReboot')" style="margin-top:0;font-size:11px">
               <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-.08-4.36"/></svg>
@@ -323,6 +397,31 @@
               <button class="confirm-y" onclick="execReboot()">Yes</button>
               <button class="confirm-n" onclick="hideConfirm('cfmReboot')">No</button>
             </div>
+          </div>
+          </div>
+        </div>
+      </div>
+
+       <!-- Gateway info -->
+      <div class="panel">
+        <div class="panel-head">
+          <span class="panel-title">Gateway Information</span>
+          <button class="scan-btn M" onclick="doSyncTime()" id="syncBtn">
+            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-.08-4.36"/></svg>
+            Sync Time
+          </button>
+          <span id="gwTimeSrc" class="hdr-badge M ws-ok" style="display:none">NTP</span>
+        </div>
+        <div class="panel-body">
+          <div class="info-grid" style="border:none;margin:0;padding:0">
+            <div class="info-row"><span class="info-lbl">System Time</span><span class="info-val M" id="gwTimeVal">Not synced</span></div>
+            <div class="info-row"><span class="info-lbl">Uptime</span><span class="info-val M" id="gwUptime">--</span></div>
+            <div class="info-row"><span class="info-lbl">Free Heap</span><span class="info-val M" id="gwHeap">--</span></div>
+            <div class="info-row"><span class="info-lbl">Nodes</span><span class="info-val M" id="gwNodes">--</span></div>
+          </div>
+          <div id="gwTimeWarn" style="display:none;margin-top:10px;padding:8px 10px;border-radius:6px;background:rgba(255,159,67,.1);border:1px solid rgba(255,159,67,.25);font-size:10px;color:var(--wn)" class="M">
+            <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" style="margin-right:4px;vertical-align:middle"><path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>
+            Time not synced — schedules unavailable
           </div>
         </div>
       </div>

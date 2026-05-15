@@ -40,7 +40,9 @@
  *   GET  /api/wifistatus     -> {"apActive","connecting","connected","ip","ssid","rssi"}
  *                               polled every 800 ms by wifi_config.html after POST /api/connect
  *   GET  /api/disconnect     -> {"ok":true}  abort current attempt
- *   GET  /api/forget         -> {"ok":true}  clear NVS credentials, restore AP
+ *   GET  /api/forget         -> {"ok":true}  clear NVS STA credentials, restore AP
+ *   GET  /api/ap             -> {"ssid","hasPassword"}
+ *   POST /api/ap             -> body: password=...  → {"ok":true}  (blank = open network)
  *
  *   /api/wifistatus != /api/status  (dashboard uses /api/status for gateway system info)
  *
@@ -57,7 +59,12 @@
  *     Firefox  : /canonical.html
  *
  * -- NVS layout ------------------------------------------------------------------
- *   namespace "wifi-cfg" · key "ssid" (≤32 B) · key "pass" (≤64 B, empty = open)
+ *   namespace "wifi-cfg"
+ *     "ssid"   (≤32 B)  — STA target network
+ *     "pass"   (≤64 B)  — STA password, empty = open
+ *     "appass" (≤63 B)  — AP password, empty = open (survives /api/forget)
+ *     "sip" / "sgw" / "ssn" / "sdns" — static IP (optional)
+ *     "tzoff"  (int32)  — UTC offset in seconds
  *   Survives LittleFS format and firmware OTA.
  */
 
@@ -67,7 +74,6 @@
 // -- Parameters -----------------------------------------------------------------
 #define CONFIG_PIN              34           // GPIO34 / BOOT — hold LOW at power-on
 #define WIFI_CONNECT_TIMEOUT_MS 12000
-#define CONFIG_AP_SSID          "PowerTelemetry-Setup"
 #define FW_VERSION_STR          "v1.0.0"  // human-readable string for /api/info
                                            // protocol version integer: FW_VERSION in tdma_protocol.h
 
@@ -97,6 +103,13 @@ void wifiHandleCatchAll(AsyncWebServerRequest *req);
 
 /** Erase stored STA credentials (ssid/pass/static-IP) from NVS. Safe to call before ESP.restart(). */
 void wifiClearCredentials();
+
+/** Erase the entire wifi-cfg NVS namespace (STA creds, AP password, static IP,
+ *  timezone offset, and dashboard password). Use for factory reset before ESP.restart(). */
+void wifiFactoryResetNvs();
+
+/** Returns the dynamically computed AP SSID ("PowerTelemeter_XXXX"). */
+const char* wifiGetApSsid();
 
 /** Status accessors — used by /api/status to include apActive field. */
 bool wifiIsApActive();

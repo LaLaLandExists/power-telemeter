@@ -320,6 +320,11 @@ body::before{
   color:var(--dg);margin-top:8px;
 }
 .btn-danger:hover{background:rgba(255,56,96,.2)}
+.btn-safe{
+  background:rgba(0,229,160,.1);border:1px solid rgba(0,229,160,.3);
+  color:var(--ac);margin-top:8px;
+}
+.btn-safe:hover{background:rgba(0,229,160,.2)}
 
 /* -- Divider --------------------------------------------------- */
 .divider{height:1px;background:var(--bd);margin:12px 0}

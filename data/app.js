@@ -4,6 +4,22 @@ let NC=[],gwTimeSet=false,gwTime='--:--:--',gwNtpSynced=false;
 let pendingCmd={};
 let relayOffAt={};
 let costRate=parseFloat(localStorage.getItem('pt-costRate'))||12.00;
+let authToken=localStorage.getItem('pt-token')||null;
+
+/* -- Auth: save raw fetch ref and patch window.fetch for token injection -- */
+window._authFetch=window.fetch.bind(window);
+(function(){
+  const _f=window._authFetch;
+  window.fetch=async function(url,opts){
+    opts=opts||{};
+    if(authToken){opts={...opts,headers:{...(opts.headers||{}),'X-Auth-Token':authToken}};}
+    const r=await _f(url,opts);
+    if(r.status===401&&typeof url==='string'&&!url.includes('/api/login')){
+      authToken=null;localStorage.removeItem('pt-token');showLoginOverlay();
+    }
+    return r;
+  };
+})();
 
 const MC={
   power:  {l:'Power (W)',  c:'#118ab2', k:'p', n:'power'},
@@ -115,7 +131,12 @@ function appendLog(line){
 function connectWS(){
   const u=(location.protocol==='https:'?'wss:':'ws:')+'//'+location.host+'/ws';
   socket=new WebSocket(u);
-  socket.onopen=()=>{wsOk=true;wsDot(true);if(!gwNtpSynced)syncTime();wsSend({cmd:'get_nodes'});};
+  socket.onopen=()=>{
+    wsOk=true;wsDot(true);
+    // Send auth token; server responds with {type:"auth",ok:true/false}
+    // If no password, server auto-auths and sends auth:ok immediately on connect
+    socket.send(JSON.stringify({cmd:'auth',token:authToken||''}));
+  };
   socket.onmessage=e=>{try{onMsg(JSON.parse(e.data));}catch(x){}};
   socket.onclose=()=>{wsOk=false;wsDot(false);startFallback();setTimeout(connectWS,3000);};
   socket.onerror=()=>socket.close();
@@ -146,6 +167,12 @@ function updGwTime(){
 
 /* -- Message handler --------------------------------------------- */
 function onMsg(m){
+  if(m.type==='auth'){
+    if(m.ok){if(!gwNtpSynced)syncTime();wsSend({cmd:'get_nodes'});}
+    else{doLogout();}
+    return;
+  }
+
   if(m.timeSet!==undefined)gwTimeSet=m.timeSet;
   if(m.time)gwTime=m.time;
   if(m.ntpSynced!==undefined)gwNtpSynced=m.ntpSynced;
@@ -596,6 +623,7 @@ function updNetPanel(d){
 let wifiSelectedSSID = '';
 let wifiPollIv = null;
 let wifiDrawerOpen = false;
+let gwCtrlDrawerOpen = false;
 let wifiCachedStaticIp = ''; // populated on drawer open; shown in AP-dropped hint
 let wifiStaticSaved = false; // true when static IP fields match what's persisted on the server
 
@@ -655,6 +683,12 @@ function wifiValidateStaticFields() {
   const allOk = ip && gw && sn && ipOk && gwOk && snOk && dnsOk;
   $('wifiStaticSaveBtn').disabled = !allOk;
   wifiValidateConnect();
+}
+
+function toggleGwCtrlDrawer() {
+  gwCtrlDrawerOpen = !gwCtrlDrawerOpen;
+  $('gwCtrlDrawer').classList.toggle('open', gwCtrlDrawerOpen);
+  $('gwCtrlCfgBtn').classList.toggle('ac-active', gwCtrlDrawerOpen);
 }
 
 function toggleWifiDrawer() {
@@ -1025,7 +1059,6 @@ async function fetchFeatures() {
     gwFeatures = d;
     const enc = !!d.encryption;
     const el = id => $(id);
-    if (el('encBadge'))   el('encBadge').style.display   = enc ? '' : 'none';
     if (el('provSection')) el('provSection').style.display = enc ? '' : 'none';
   } catch(e) {}
 }
@@ -1066,6 +1099,205 @@ async function doProvision() {
   }, 500);
 }
 
+/* -- AP security ------------------------------------------------- */
+async function apLoadInfo() {
+  try {
+    const r = await fetch('/api/ap');
+    if (!r.ok) return;
+    const d = await r.json();
+    const name = document.getElementById('apSsidName');
+    const status = document.getElementById('apSsidStatus');
+    if (name) name.textContent = d.ssid;
+    if (status) status.textContent = d.hasPassword ? '· Protected' : '· Open';
+    const inp = document.getElementById('apPwInput');
+    if (inp) inp.placeholder = d.hasPassword ? 'Enter password to change' : 'Leave blank for open network';
+  } catch(_) {}
+}
+
+function apTogglePw() {
+  const inp = document.getElementById('apPwInput');
+  const ico = document.getElementById('apEyeIco');
+  if (!inp) return;
+  const show = inp.type === 'password';
+  inp.type = show ? 'text' : 'password';
+  ico.innerHTML = show
+    ? '<path d="M17.94 17.94A10.07 10.07 0 0 1 12 20c-7 0-11-8-11-8a18.45 18.45 0 0 1 5.06-5.94M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.16 3.19m-6.72-1.07a3 3 0 1 1-4.24-4.24"/><line x1="1" y1="1" x2="23" y2="23"/>'
+    : '<path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/>';
+}
+
+const AP_PW_HINT = 'Minimum 8 characters · leave blank for open network';
+function apSetHint(msg, color) {
+  const h = document.getElementById('apPwHint');
+  if (!h) return;
+  h.style.color = color || 'var(--txd)';
+  h.textContent = msg;
+}
+
+function apSavePassword() {
+  const inp = document.getElementById('apPwInput');
+  if (!inp) return;
+  const pw = inp.value.trim();
+  if (pw.length > 0 && pw.length < 8) {
+    apSetHint('Minimum 8 characters required', 'var(--err, #e05252)');
+    return;
+  }
+  showConfirm('cfmApPw');
+}
+
+async function execApSavePassword() {
+  hideConfirm('cfmApPw');
+  const inp = document.getElementById('apPwInput');
+  if (!inp) return;
+  const pw = inp.value.trim();
+  apSetHint('Saving…', 'var(--txd)');
+  try {
+    const fd = new FormData();
+    fd.append('password', pw);
+    const r = await fetch('/api/ap', { method: 'POST', body: new URLSearchParams(fd) });
+    const d = await r.json();
+    if (d.ok) {
+      inp.value = '';
+      apSetHint(pw ? 'Password set' : 'Password cleared', 'var(--ac)');
+      await apLoadInfo();
+      setTimeout(() => apSetHint(AP_PW_HINT), 3000);
+    } else {
+      apSetHint(d.message || 'Error', 'var(--err, #e05252)');
+    }
+  } catch(_) {
+    apSetHint('Request failed', 'var(--err, #e05252)');
+  }
+}
+
+/* -- Auth overlay ------------------------------------------------ */
+function showLoginOverlay(){
+  const el=document.getElementById('authOverlay');
+  if(el)el.style.display='flex';
+  window._authFetch('/api/info').then(r=>r.json()).then(d=>{
+    const sub=document.getElementById('authApSsid');
+    if(sub&&d.apSsid)sub.textContent=d.apSsid;
+  }).catch(()=>{});
+}
+
+function hideLoginOverlay(){
+  const el=document.getElementById('authOverlay');
+  if(el)el.style.display='none';
+}
+
+function loginTogglePw(){
+  const inp=document.getElementById('loginPwInput');
+  const ico=document.getElementById('loginEyeIco');
+  if(!inp)return;
+  const show=inp.type==='password';
+  inp.type=show?'text':'password';
+  ico.innerHTML=show
+    ?'<path d="M17.94 17.94A10.07 10.07 0 0 1 12 20c-7 0-11-8-11-8a18.45 18.45 0 0 1 5.06-5.94M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.16 3.19m-6.72-1.07a3 3 0 1 1-4.24-4.24"/><line x1="1" y1="1" x2="23" y2="23"/>'
+    :'<path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/>';
+}
+
+async function doLogin(){
+  const inp=document.getElementById('loginPwInput');
+  const hint=document.getElementById('loginHint');
+  if(!inp||!hint)return;
+  hint.style.color='var(--txd)';
+  hint.textContent='Verifying…';
+  try{
+    const fd=new FormData();
+    fd.append('password',inp.value);
+    const r=await window._authFetch('/api/login',{method:'POST',body:new URLSearchParams(fd)});
+    const d=await r.json();
+    if(d.ok){
+      authToken=d.token;
+      localStorage.setItem('pt-token',authToken);
+      inp.value='';
+      hint.textContent='';
+      hideLoginOverlay();
+      startApp();
+    }else{
+      hint.style.color='var(--err,#e05252)';
+      hint.textContent='Incorrect password';
+      inp.value='';
+      inp.focus();
+    }
+  }catch(_){
+    hint.style.color='var(--err,#e05252)';
+    hint.textContent='Connection failed';
+  }
+}
+
+async function doLogout(){
+  await fetch('/api/logout').catch(()=>{});
+  authToken=null;
+  localStorage.removeItem('pt-token');
+  if(socket){socket.close();socket=null;wsOk=false;}
+  showLoginOverlay();
+}
+
+/* -- Dashboard security ------------------------------------------ */
+const DASH_PW_HINT='Minimum 8 characters · leave blank for open access';
+
+function dashTogglePw(){
+  const inp=document.getElementById('dashPwInput');
+  const ico=document.getElementById('dashEyeIco');
+  if(!inp)return;
+  const show=inp.type==='password';
+  inp.type=show?'text':'password';
+  ico.innerHTML=show
+    ?'<path d="M17.94 17.94A10.07 10.07 0 0 1 12 20c-7 0-11-8-11-8a18.45 18.45 0 0 1 5.06-5.94M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.16 3.19m-6.72-1.07a3 3 0 1 1-4.24-4.24"/><line x1="1" y1="1" x2="23" y2="23"/>'
+    :'<path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/>';
+}
+
+function dashSetHint(msg,color){
+  const h=document.getElementById('dashPwHint');
+  if(!h)return;
+  h.style.color=color||'var(--txd)';
+  h.textContent=msg;
+}
+
+async function dashLoadSecure(){
+  try{
+    const r=await fetch('/api/dashsecure');
+    if(!r.ok)return;
+    const d=await r.json();
+    const btn=document.getElementById('dashLogoutBtn');
+    if(btn)btn.style.display=d.hasPassword?'':'none';
+    const inp=document.getElementById('dashPwInput');
+    if(inp)inp.placeholder=d.hasPassword?'Password set — enter new to change':'Leave blank for open access';
+  }catch(_){}
+}
+
+function dashSavePassword(){
+  const inp=document.getElementById('dashPwInput');
+  if(!inp)return;
+  const pw=inp.value.trim();
+  if(pw.length>0&&pw.length<8){dashSetHint('Minimum 8 characters required','var(--err,#e05252)');return;}
+  showConfirm('cfmDashPw');
+}
+
+async function execDashSavePassword(){
+  hideConfirm('cfmDashPw');
+  const inp=document.getElementById('dashPwInput');
+  if(!inp)return;
+  const pw=inp.value.trim();
+  dashSetHint('Saving…','var(--txd)');
+  try{
+    const fd=new FormData();
+    fd.append('password',pw);
+    const r=await fetch('/api/dashsecure',{method:'POST',body:new URLSearchParams(fd)});
+    const d=await r.json();
+    if(d.ok){
+      inp.value='';
+      dashSetHint(pw?'Password set — you will be logged out':'Password cleared','var(--ac)');
+      await dashLoadSecure();
+      if(pw){setTimeout(()=>doLogout(),2000);}
+      else{setTimeout(()=>dashSetHint(DASH_PW_HINT),3000);}
+    }else{
+      dashSetHint(d.message||'Error','var(--err,#e05252)');
+    }
+  }catch(_){
+    dashSetHint('Request failed','var(--err,#e05252)');
+  }
+}
+
 /* -- Reboot ------------------------------------------------------ */
 async function execReboot() {
   hideConfirm('cfmReboot');
@@ -1084,16 +1316,39 @@ async function execReboot() {
 }
 
 /* -- Init -------------------------------------------------------- */
-function init() {
-  document.addEventListener('DOMContentLoaded',()=>{
+function startApp(){
+  connectWS();
+  route();
+  setInterval(fetchSys,10000);
+  fetchSys();
+  fetchFeatures();
+  apLoadInfo();
+  dashLoadSecure();
+}
+
+function init(){
+  document.addEventListener('DOMContentLoaded',async()=>{
     applyTheme(getTheme());
     $('costRateIn').value=costRate;
     $('btnClearLog')?.addEventListener('click',()=>{const b=$('serialLogBox');if(b)b.innerHTML='';});
     buildLogFilterRow();
-    connectWS();
-    route();
-    setInterval(fetchSys,10000);
-    fetchSys();
-    fetchFeatures();
+    try{
+      const r=await window._authFetch('/api/authstatus');
+      const d=await r.json();
+      if(!d.hasPassword){
+        // No password required — clear any stale token and proceed
+        authToken=null;localStorage.removeItem('pt-token');
+        hideLoginOverlay();startApp();
+      }else if(authToken){
+        // Password required; probe stored token
+        const probe=await fetch('/api/status');
+        if(probe.ok){hideLoginOverlay();startApp();}
+        // If 401, fetch patcher already called showLoginOverlay()
+      }else{
+        showLoginOverlay();
+      }
+    }catch(_){
+      showLoginOverlay();
+    }
   });
 }
