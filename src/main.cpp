@@ -45,15 +45,15 @@
  * -- Hardware ------------------------------------------------------------------
  *
  *   SX1278 (VSPI):
- *     Gateway:  NSS=26  MOSI=27  MISO=14  SCK=13  DIO0=2   RST=4
- *     Node:     NSS=5   MOSI=18  MISO=19  SCK=21  DIO0=14  RST=13  DIO1=27
+ *     ESP32-dev (gateway + node):  NSS=26  MOSI=27  MISO=14  SCK=13  DIO0=2   RST=4
+ *     ESP32-S3 Super Mini (node):  NSS=4   MOSI=5   MISO=6   SCK=7   DIO0=8   RST=9
  *
  *   Gateway only:
  *     WiFi + LittleFS (index.html + wifi_config.html in data/ folder)
  *     Dashboard: http://telemeter.local  or  http://192.168.4.1
  *
  *   Node only:
- *     PZEM-004T v3  -> Serial2  PZEM_RX=GPIO22, PZEM_TX=GPIO23
+ *     PZEM-004T v3  -> Serial2  PZEM_TX=GPIO22 (-> PZEM RX), PZEM_RX=GPIO23 (<- PZEM TX)
  *     Relay signal  -> GPIO25 (active HIGH)
  *     LED green     -> GPIO32
  *     LED red       -> GPIO33
@@ -145,8 +145,8 @@
     #define LED_RED_PIN_    12
     #define NODE_BTN_PIN    13
   #else
-    #define PZEM_RX_PIN     22   // PZEM RX  -> ESP32 TX2
-    #define PZEM_TX_PIN     23   // PZEM TX  <- ESP32 RX2
+    #define PZEM_TX_PIN     22   // ESP32 TX2 -> PZEM RX
+    #define PZEM_RX_PIN     23   // ESP32 RX2 <- PZEM TX
     #define RELAY_PIN_      25   // Relay signal (active HIGH)
     #define LED_GREEN_PIN_  32   // Two-color LED - green channel
     #define LED_RED_PIN_    33   // Two-color LED - red channel
@@ -169,7 +169,7 @@ SX1278 radio = new Module(LORA_PIN_NSS, LORA_PIN_DIO0, LORA_PIN_RST, LORA_PIN_DI
 #ifdef NODE_TELEMETRY
   #ifndef PZEM_FAKE
   // PZEM-004T v3 on Serial2 - extern-referenced by node_tdma_task.cpp
-  PZEM004Tv30 pzem(Serial2, PZEM_TX_PIN, PZEM_RX_PIN);
+  PZEM004Tv30 pzem(Serial2, PZEM_RX_PIN, PZEM_TX_PIN);
   #endif
 #endif
 
@@ -319,9 +319,14 @@ void loop() {
 // =============================================================================
 #ifdef NODE_TELEMETRY
 
-// NODE_BTN_PIN is active LOW; external pull-up required (GPIO34 on ESP32 is input-only).
+// NODE_BTN_PIN is active LOW; GPIO34 (ESP32-dev) is input-only — external pull-up required.
+// GPIO13 (S3 Super Mini) supports internal pull-up.
 static void btnTask(void*) {
+#ifdef BOARD_S3_SUPERMINI
+  pinMode(NODE_BTN_PIN, INPUT_PULLUP);
+#else
   pinMode(NODE_BTN_PIN, INPUT);
+#endif
   vTaskDelay(pdMS_TO_TICKS(500));  // skip transients during boot
   for (;;) {
     if (digitalRead(NODE_BTN_PIN) == LOW) {

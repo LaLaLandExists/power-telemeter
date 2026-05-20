@@ -196,7 +196,8 @@
       "track_widths": [
         0.0,
         0.75,
-        1.0
+        1.0,
+        3.5
       ],
       "tuning_pattern_settings": {
         "diff_pair_defaults": {
@@ -487,7 +488,7 @@
     "pinned_symbol_libs": []
   },
   "meta": {
-    "filename": "gateway.kicad_pro",
+    "filename": "telemetry.kicad_pro",
     "version": 3
   },
   "net_settings": {
@@ -642,18 +643,18 @@
     "subpart_id_separator": 0,
     "top_level_sheets": [
       {
-        "filename": "gateway.kicad_sch",
-        "name": "Root",
-        "uuid": "6a6c7be0-d203-4a56-8c40-70d6a9636d35"
+        "filename": "telemetry.kicad_sch",
+        "name": "telemetry",
+        "uuid": "b6a3fc84-00c3-4034-8278-5a51d95468e9"
       }
     ],
-    "used_designators": "",
+    "used_designators": "R5-8,K1",
     "variants": []
   },
   "sheets": [
     [
-      "6a6c7be0-d203-4a56-8c40-70d6a9636d35",
-      "Root"
+      "b6a3fc84-00c3-4034-8278-5a51d95468e9",
+      "telemetry"
     ]
   ],
   "text_variables": {},

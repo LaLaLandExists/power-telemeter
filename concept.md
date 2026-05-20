@@ -171,7 +171,7 @@ Eviction is deliberately conservative: the gateway only reclaims a slot when all
 
 ### 5.4 Sensor Subsystem — PZEM-004T v3
 
-Each sensor node interfaces a PZEM-004T v3 power meter on ESP32 UART2 (RX=GPIO22, TX=GPIO23) using the Modbus RTU protocol at 9600 baud. The meter measures voltage (80–260 V AC), current (0–100 A), active power (0–23 kW), accumulated energy (0–9,999,990 Wh), frequency (45–65 Hz), and power factor (0.00–1.00) at the resolutions listed in Section 2.4. An AC relay (active-HIGH on GPIO25) controlled by the ESP32 allows the dashboard to energise or de-energise the monitored load.
+Each sensor node interfaces a PZEM-004T v3 power meter on ESP32 UART2 (TX=GPIO22 → PZEM RX, RX=GPIO23 ← PZEM TX) using the Modbus RTU protocol at 9600 baud. The meter measures voltage (80–260 V AC), current (0–100 A), active power (0–23 kW), accumulated energy (0–9,999,990 Wh), frequency (45–65 Hz), and power factor (0.00–1.00) at the resolutions listed in Section 2.4. An AC relay (active-HIGH on GPIO25) controlled by the ESP32 allows the dashboard to energise or de-energise the monitored load.
 
 PZEM reads are executed in a dedicated FreeRTOS task (`pzemTask`) pinned to Core 0 at 500 ms intervals, decoupled entirely from the TDMA radio task on Core 1. A mutex protects the shared `PzemData` struct. Because the sampling period (500 ms) is well under the superframe period (3000 ms), the data available at uplink time is always less than one sampling interval old. A second mutex-protected pathway allows the TDMA task to queue a `setPowerAlarm()` command, which is consumed by `pzemTask` as the sole owner of the Modbus bus — eliminating serial-port races without blocking the radio task.
 
@@ -215,16 +215,20 @@ Symmetric key distribution uses PN532 I²C NFC readers: the gateway auto-generat
 
 ## 6. Implementation
 
-The firmware is developed in C++11 under the Arduino framework on PlatformIO, targeting the `esp32dev` board profile. Six build environments cover all combinations of role (gateway / node), encryption (on / off), and PZEM mode (hardware / simulated):
+The firmware is developed in C++11 under the Arduino framework on PlatformIO, targeting the `esp32dev` board profile (gateway and standard nodes) and `esp32s3_supermini` (S3 Super Mini nodes). Ten build environments cover all combinations of role (gateway / node), board, encryption (on / off), and PZEM mode (hardware / simulated):
 
-| Environment          | Role    | Encryption     | PZEM      |
-| -------------------- | ------- | -------------- | --------- |
-| `gateway`          | Gateway | off            | n/a       |
-| `gateway_enc`      | Gateway | PKT_ENCRYPTION | n/a       |
-| `node`             | Node    | off            | hardware  |
-| `node_enc`         | Node    | PKT_ENCRYPTION | hardware  |
-| `node_nettest`     | Node    | off            | simulated |
-| `node_enc_nettest` | Node    | PKT_ENCRYPTION | simulated |
+| Environment             | Board         | Role    | Encryption     | PZEM      |
+| ----------------------- | ------------- | ------- | -------------- | --------- |
+| `gateway`             | esp32dev      | Gateway | off            | n/a       |
+| `gateway_enc`         | esp32dev      | Gateway | PKT_ENCRYPTION | n/a       |
+| `node`                | esp32dev      | Node    | off            | hardware  |
+| `node_enc`            | esp32dev      | Node    | PKT_ENCRYPTION | hardware  |
+| `node_nettest`        | esp32dev      | Node    | off            | simulated |
+| `node_enc_nettest`    | esp32dev      | Node    | PKT_ENCRYPTION | simulated |
+| `node_s3`             | S3 Super Mini | Node    | off            | hardware  |
+| `node_s3_enc`         | S3 Super Mini | Node    | PKT_ENCRYPTION | hardware  |
+| `node_s3_nettest`     | S3 Super Mini | Node    | off            | simulated |
+| `node_s3_enc_nettest` | S3 Super Mini | Node    | PKT_ENCRYPTION | simulated |
 
 The `node_nettest` and `node_enc_nettest` environments replace PZEM hardware reads with a simulated task (`fakePzemTask`) that generates sinusoidal voltage/current waveforms. These environments allow full protocol testing — including join, telemetry, relay commands, schedule activation, and epoch-driven re-registration — without requiring AC metering hardware, significantly accelerating iterative development.
 

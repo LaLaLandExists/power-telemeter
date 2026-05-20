@@ -5,4 +5,13 @@ data/**/*.gz
 .vscode/launch.json
 .vscode/ipch
 rollback/**
-schematics/**
+
+# KiCad — generated/local files, not design sources
+**/*.kicad_prl
+**/*-backups/
+**/_autosave-*
+**/fp-info-cache
+**/*.lck
+**/*.bak
+**/*.000
+**/*-rescue-backup/

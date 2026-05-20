@@ -115,7 +115,7 @@ Floating-point sensor values are encoded as integers with implicit scale factors
 
 ### 5.1 Electrical Measurement
 
-Each sensor node interfaces with a PZEM-004T v3 power meter via UART (Modbus-RTU, 9600 baud) on ESP32 UART2 (RX=GPIO22, TX=GPIO23). The PZEM-004T v3 measures:
+Each sensor node interfaces with a PZEM-004T v3 power meter via UART (Modbus-RTU, 9600 baud) on ESP32 UART2 (TX=GPIO22 → PZEM RX, RX=GPIO23 ← PZEM TX; S3 Super Mini uses TX=GPIO43, RX=GPIO44). The PZEM-004T v3 measures:
 
 | Parameter     | Range          | Resolution |
 |---------------|----------------|------------|
@@ -160,10 +160,12 @@ FreeRTOS on the dual-core ESP32 is used as follows:
 | NODE_TDMA   | 1    | 2        | 8 KB   | Beacon listen, DL receive, UL transmit        |
 | PZEM        | 0    | 1        | 4 KB   | Modbus sampling (continuous, ~500 ms period)  |
 | SCHED       | 0    | 1        | 2 KB   | Relay schedule evaluation (10 s period)       |
-| LED         | 0    | 1        | 1 KB   | Two-color state LED + nudge blink             |
+| LED         | 0    | 1        | 2 KB   | Two-color state LED + nudge blink             |
 | FRAM        | 0    | 0        | 2 KB   | Deferred I²C FRAM writes (queue-driven)       |
 | Log drain   | 0    | 1        | 2 KB   | Async serial output + WebSocket relay         |
 | Web/WiFi    | 0    | 1        | ESP-IDF managed | HTTP, WebSocket                     |
+
+> **S3 Super Mini note:** On ESP32-S3 (Xtensa LX7), interrupt/exception frames are larger than on the LX6. Any Core 0 task that calls `logAsync` (which invokes `vsnprintf`) requires ≥ 2048 bytes of stack; 1024 bytes overflows silently and manifests as a stack-canary panic on the first formatted log call.
 
 Pinning the radio task to Core 1 at priority 2 ensures it is never preempted by the Wi-Fi stack (which runs on Core 0 at priority 1), protecting TDMA timing from Wi-Fi interrupt storms — a known issue on the ESP32 documented by Espressif [11].
 
@@ -266,7 +268,7 @@ Symmetric key distribution in field-deployed embedded systems typically requires
 The provisioning flow is:
 1. `gateway_enc` auto-generates a cryptographically random 128-bit key on first boot and stores it in NVS (`lora-net` / `aeskey`).
 2. The operator taps a blank MIFARE card to the gateway PN532; the web dashboard writes the key to the card.
-3. Each node (`node_enc`) blinks red on boot until a provisioned card is presented to its PN532; the key is read, stored in NVS, and the node reboots into normal operation.
+3. Each node (`node_enc` / `node_s3_enc`) blinks red on boot until a provisioned card is presented to its PN532; the key is read, stored in NVS, and the node reboots into normal operation.
 
 Physical proximity is the security boundary: an attacker must have both the card and be within NFC range (~4 cm) to extract the key.
 

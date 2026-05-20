@@ -1,6 +1,7 @@
 (sym_lib_table
 	(version 7)
-	(lib (name "esp32_30pin_revised") (type "KiCad") (uri "${KIPRJMOD}/esp32_30pin_revised.kicad_sym") (options "") (descr ""))
-	(lib (name "lora_sx1278_ra02_breakout") (type "KiCad") (uri "${KIPRJMOD}/lora_sx1278_ra02_breakout.kicad_sym") (options "") (descr ""))
-	(lib (name "Adafruit I2C FRAM-eagle-import") (type "KiCad") (uri "${KIPRJMOD}/Adafruit I2C FRAM-eagle-import.kicad_sym") (options "") (descr ""))
+	(lib (name "fram_breakout") (type "KiCad") (uri "C:/Users/Lawrence Joven Garol/Desktop/pss/fram_breakout.kicad_sym") (options "") (descr ""))
+	(lib (name "lora_sx1278_ra02_breakout") (type "KiCad") (uri "C:/Users/Lawrence Joven Garol/Desktop/pss/lora_sx1278_ra02_breakout.kicad_sym") (options "") (descr ""))
+	(lib (name "esp32_30pin_revised") (type "KiCad") (uri "C:/Users/Lawrence Joven Garol/Desktop/pss/esp32_30pin_revised.kicad_sym") (options "") (descr ""))
+	(lib (name "Adafruit I2C FRAM-eagle-import") (type "KiCad") (uri "C:/Users/Lawrence Joven Garol/Desktop/pss/Adafruit I2C FRAM-eagle-import.kicad_sym") (options "") (descr ""))
 )

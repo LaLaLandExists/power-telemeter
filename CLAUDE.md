@@ -10,7 +10,7 @@ a single codebase:
   REST + WebSocket), manages up to 8 sensor nodes, persists energy totals and
   telemetry history to FRAM.
 - **Sensor Node** — TDMA slave; samples voltage/current/power/energy via PZEM-004T v3,
-  controls a relay, and reports to the gateway every superframe (~1.845 s).
+  controls a relay, and reports to the gateway every superframe (~3 s).
 
 ---
 
@@ -18,7 +18,7 @@ a single codebase:
 
 | Layer       | Technology                                                                             |
 | ----------- | -------------------------------------------------------------------------------------- |
-| MCU         | ESP32 (esp32dev)                                                                       |
+| MCU         | ESP32 (esp32dev) / ESP32-S3 Super Mini (node S3 variants)                             |
 | Framework   | Arduino (PlatformIO)                                                                   |
 | Radio       | SX1278 — RadioLib `^7.6.0`                                                          |
 | Power meter | PZEM-004T v3 — PZEM-004T-v30 `^1.1.2`                                               |
@@ -31,16 +31,20 @@ a single codebase:
 
 ## Build & Flash Commands
 
-Six PlatformIO environments are defined:
+Ten PlatformIO environments are defined:
 
-| Environment       | Role    | Encryption | PZEM     |
-| ----------------- | ------- | ---------- | -------- |
-| `gateway`         | Gateway | off        | n/a      |
-| `gateway_enc`     | Gateway | AES-128 CTR | n/a    |
-| `node`            | Node    | off        | hardware |
-| `node_enc`        | Node    | AES-128 CTR | hardware |
-| `node_nettest`    | Node    | off        | simulated |
-| `node_enc_nettest` | Node   | AES-128 CTR | simulated |
+| Environment           | Board         | Role    | Encryption  | PZEM      |
+| --------------------- | ------------- | ------- | ----------- | --------- |
+| `gateway`             | esp32dev      | Gateway | off         | n/a       |
+| `gateway_enc`         | esp32dev      | Gateway | AES-128 CTR | n/a       |
+| `node`                | esp32dev      | Node    | off         | hardware  |
+| `node_enc`            | esp32dev      | Node    | AES-128 CTR | hardware  |
+| `node_nettest`        | esp32dev      | Node    | off         | simulated |
+| `node_enc_nettest`    | esp32dev      | Node    | AES-128 CTR | simulated |
+| `node_s3`             | S3 Super Mini | Node    | off         | hardware  |
+| `node_s3_enc`         | S3 Super Mini | Node    | AES-128 CTR | hardware  |
+| `node_s3_nettest`     | S3 Super Mini | Node    | off         | simulated |
+| `node_s3_enc_nettest` | S3 Super Mini | Node    | AES-128 CTR | simulated |
 
 ```bash
 # Build gateway firmware (includes LittleFS, web server, FRAM)
@@ -67,15 +71,20 @@ web dashboard at `http://telemeter.local` (mDNS) or `http://192.168.4.1` (AP fal
 ### Optional features (build flags)
 
 - **`-D PKT_ENCRYPTION`** — enables AES-128 CTR packet encryption and PN532 RFID key
-  provisioning. The `gateway_enc` / `node_enc` / `node_enc_nettest` environments set this
-  flag and add the `adafruit/Adafruit PN532` library dependency. Provisioning flow:
+  provisioning. The `gateway_enc` / `node_enc` / `node_enc_nettest` / `node_s3_enc` /
+  `node_s3_enc_nettest` environments set this flag and add the `adafruit/Adafruit PN532`
+  library dependency. Provisioning flow:
   1. Flash `gateway_enc` → key auto-generated on first boot (stored in NVS `lora-net`/`aeskey`).
   2. Web dashboard → "Write Key to Card" → tap MIFARE card to gateway PN532.
   3. Flash `node_enc` → blinks red until card is tapped; stores key; reboots.
 
 - **`-D PZEM_FAKE`** — replaces PZEM hardware reads with simulated data. Used for
   network/protocol testing without AC metering hardware (`node_nettest`,
-  `node_enc_nettest` environments).
+  `node_enc_nettest`, `node_s3_nettest`, `node_s3_enc_nettest` environments).
+
+- **`-D BOARD_S3_SUPERMINI`** — selects ESP32-S3 Super Mini pin assignments for LoRa,
+  PZEM UART, relay, LEDs, and PN532. Set automatically by the `flags:s3_supermini`
+  feature group; do not set manually.
 
 ---
 
@@ -83,7 +92,7 @@ web dashboard at `http://telemeter.local` (mDNS) or `http://192.168.4.1` (AP fal
 
 ```
 power-telemeterv2/
-├── platformio.ini              # Six envs: gateway, gateway_enc, node, node_enc, node_nettest, node_enc_nettest
+├── platformio.ini              # Ten envs: gateway, gateway_enc, node, node_enc, node_nettest, node_enc_nettest, node_s3, node_s3_enc, node_s3_nettest, node_s3_enc_nettest
 ├── CLAUDE.md
 ├── scripts/
 │   └── gzip_data.py            # Pre-uploadfs: gzip-compresses data/ assets
@@ -98,8 +107,8 @@ power-telemeterv2/
 │   ├── fram_store.h/.cpp       # MB85RC256V FRAM persistence (energy, history, node labels)
 │   ├── node_tdma_task.h/.cpp   # Node state machine, PZEM sampling, relay, schedule
 │   ├── log_async.h/.cpp        # Non-blocking ring-buffer serial logger + WebSocket relay
-│   ├── crypto.h/.cpp           # AES-128 CTR encryption, NVS key store (LORA_ENCRYPTED only)
-│   ├── rfid_provision.h/.cpp   # PN532 I2C MIFARE Classic key provisioning (LORA_ENCRYPTED only)
+│   ├── crypto.h/.cpp           # AES-128 CTR encryption, NVS key store (PKT_ENCRYPTION only)
+│   ├── rfid_provision.h/.cpp   # PN532 I2C MIFARE Classic key provisioning (PKT_ENCRYPTION only)
 │   └── node_fake_pzem.h/.cpp   # Simulated PZEM task for net-test builds (PZEM_FAKE only)
 └── data/                       # LittleFS image root (gateway only); .gz variants built by gzip_data.py
     ├── index.html
@@ -114,43 +123,70 @@ power-telemeterv2/
 
 ## Hardware Pinout
 
-### SX1278 LoRa (both roles, VSPI)
+### SX1278 LoRa — ESP32-dev (gateway + standard node)
 
-| Signal | GPIO                      |
-| ------ | ------------------------- |
-| NSS    | 5                         |
-| MOSI   | 18                        |
-| MISO   | 19                        |
-| SCK    | 21                        |
-| DIO0   | 14                        |
-| RST    | 13                        |
-| DIO1   | 27 (tie to GND if unused) |
+| Signal | GPIO |
+| ------ | ---- |
+| NSS    | 26   |
+| MOSI   | 27   |
+| MISO   | 14   |
+| SCK    | 13   |
+| DIO0   | 2    |
+| RST    | 4    |
+| DIO1   | N/C (RADIOLIB_NC; GPIO27 occupied by MOSI) |
 
-### Gateway only
+### SX1278 LoRa — ESP32-S3 Super Mini (node S3 variants only)
 
-| Peripheral | GPIO |
-| ---------- | ---- |
-| FRAM SDA   | 32   |
-| FRAM SCL   | 33   |
+| Signal | GPIO |
+| ------ | ---- |
+| NSS    | 4    |
+| MOSI   | 5    |
+| MISO   | 6    |
+| SCK    | 7    |
+| DIO0   | 8    |
+| RST    | 9    |
+| DIO1   | N/C  |
 
-### Node only
+### Gateway only (ESP32-dev)
 
-| Peripheral          | GPIO |
-| ------------------- | ---- |
-| PZEM RX (UART2)     | 22   |
-| PZEM TX (UART2)     | 23   |
-| Relay (active HIGH) | 25   |
-| LED green           | 32   |
-| LED red             | 33   |
+| Peripheral          | GPIO | Notes                              |
+| ------------------- | ---- | ---------------------------------- |
+| FRAM SDA            | 16   | Shared with PN532 in encrypted builds |
+| FRAM SCL            | 17   | Shared with PN532 in encrypted builds |
+| Button (active LOW) | 34   | Input-only; external pull-up required |
 
-### Encrypted builds only (LORA_ENCRYPTED)
+### Node only — ESP32-dev
 
-PN532 I2C is on a **dedicated bus** on the node and shares the FRAM bus on the gateway.
+| Peripheral          | GPIO | Notes                    |
+| ------------------- | ---- | ------------------------ |
+| PZEM TX (UART2)     | 22   | ESP32 TX → PZEM RX       |
+| PZEM RX (UART2)     | 23   | ESP32 RX ← PZEM TX       |
+| Relay (active HIGH) | 25   |                          |
+| LED green           | 32   |                          |
+| LED red             | 33   |                          |
+| Button (active LOW) | 34   | Input-only; external pull-up required |
 
-| Role    | PN532 SDA | PN532 SCL |
-| ------- | --------- | --------- |
-| Gateway | 32        | 33        |
-| Node    | 4         | 26        |
+### Node only — ESP32-S3 Super Mini
+
+| Peripheral          | GPIO | Notes                                              |
+| ------------------- | ---- | -------------------------------------------------- |
+| PZEM TX (UART2)     | 43   | S3 TX (U0TXD via GPIO matrix) → PZEM RX           |
+| PZEM RX (UART2)     | 44   | S3 RX (U0RXD via GPIO matrix) ← PZEM TX           |
+| Relay (active HIGH) | 3    | JTAG strapping pin; LOW at boot is safe            |
+| LED green           | 11   | Re-asserted OUTPUT after SPI.begin() (FSPI clobber) |
+| LED red             | 12   | Re-asserted OUTPUT after SPI.begin() (FSPI clobber) |
+| Button (active LOW) | 13   |                                                    |
+
+### Encrypted builds only (`PKT_ENCRYPTION`)
+
+PN532 I2C shares the FRAM bus on the gateway and on ESP32-dev nodes. The S3 Super Mini
+uses a dedicated I2C bus on THT GPIOs.
+
+| Role              | PN532 SDA | PN532 SCL | Notes                       |
+| ----------------- | --------- | --------- | --------------------------- |
+| Gateway           | 16        | 17        | Shared with FRAM (0x50); PN532 addr 0x48 |
+| Node (ESP32-dev)  | 16        | 17        | Same shared bus as gateway  |
+| Node (S3 Super Mini) | 1      | 2         | Dedicated THT bus           |
 
 ---
 
@@ -213,7 +249,7 @@ implicit-header RX window uses a fixed receive length.
 
 ## FRAM Persistence (Gateway)
 
-**Chip:** MB85RC256V (32 KB), I²C address 0x50, SDA=32 SCL=33.
+**Chip:** MB85RC256V (32 KB), I²C address 0x50, SDA=16 SCL=17.
 
 **Memory map (v2):**
 
@@ -255,29 +291,52 @@ On version mismatch, the new version is stamped and restore is skipped — stale
 | GET    | `/api/node/{id}/history` | 120-point V/I/P history                                    |
 | POST   | `/api/node/{id}/relay`   | `state=0\|1` (curl/debug; WS preferred)                   |
 | POST   | `/api/node/{id}/name`    | `name=<string>` (curl/debug; WS preferred)               |
-| POST   | `/api/time`              | `hour=H&minute=M&second=S` (curl/debug)                  |
-| GET    | `/api/status`            | Uptime, heap, WiFi (version/mode/ssid/RSSI/IP), node count |
+| POST   | `/api/time`              | `hour=H&minute=M&second=S` (curl/debug; WS preferred)    |
+| GET    | `/api/status`            | Uptime, heap, WiFi (ntpSynced, mode, ssid, RSSI, IP), node count |
+| GET    | `/api/features`          | Active feature flags (`encryption`, etc.) for dashboard UI adaptation |
+| POST   | `/api/reboot`            | Trigger ESP.restart() (auth-gated)                         |
+
+**Dashboard authentication** (all public — no auth token required):
+
+| Method | Path                | Body / Response                                       |
+| ------ | ------------------- | ----------------------------------------------------- |
+| POST   | `/api/login`       | `token=<password>` — validate and issue session token |
+| GET    | `/api/logout`      | Invalidate session token                              |
+| GET    | `/api/authstatus`  | `{required, authenticated}` — JS polls on load        |
+| GET    | `/api/dashsecure`  | Get current password state                            |
+| POST   | `/api/dashsecure`  | Set or clear dashboard password (stored in NVS)       |
+
+> When no password is set (`dashpass` key absent or empty), all REST and WS endpoints are open. Once set, a `token` obtained from `/api/login` must be passed in the `Authorization` header or as the first WS message (`{cmd:"auth", token:"..."}`).
 
 > `/api/node/{id}/relay`, `/name`, `/api/time` are kept for curl debugging and as HTTP fallback targets. The dashboard uses WebSocket commands for these operations.
 
 ### REST — WiFi Config (`gateway_wifi_config.cpp`)
 
-| Method | Path                | Body / Response                                       |
-| ------ | ------------------- | ----------------------------------------------------- |
-| GET    | `/api/info`       | AP SSID/IP, STA connection status                     |
-| GET    | `/api/scan`       | Async WiFi scan; returns `{scanning, networks[]}`   |
-| POST   | `/api/connect`    | `ssid=&password=` — save creds + begin STA         |
-| GET    | `/api/wifistatus` | `{apActive, connecting, connected, ip, ssid, rssi}` |
-| GET    | `/api/disconnect` | Drop STA, restore AP                                  |
-| GET    | `/api/forget`     | Clear NVS creds, drop STA, restore AP                 |
+| Method | Path                   | Body / Response                                             |
+| ------ | ---------------------- | ----------------------------------------------------------- |
+| GET    | `/api/info`          | AP SSID/IP, STA connection status                           |
+| GET    | `/api/scan`          | Async WiFi scan; returns `{scanning, networks[]}`         |
+| POST   | `/api/connect`       | `ssid=&password=` — save creds + begin STA              |
+| GET    | `/api/wifistatus`    | `{apActive, connecting, connected, ip, ssid, rssi, ntpSynced}` |
+| GET    | `/api/disconnect`    | Drop STA, restore AP                                        |
+| GET    | `/api/forget`        | Clear NVS STA creds, drop STA, restore AP                   |
+| GET    | `/api/staticip`      | Return current static IP config or DHCP state               |
+| POST   | `/api/staticip`      | `ip=&gateway=&subnet=&dns=` — set static IP              |
+| GET    | `/api/staticip/clear` | Revert to DHCP (removes static IP NVS keys)                |
+| GET    | `/api/ap`            | AP SSID and whether a password is set                       |
+| POST   | `/api/ap`            | `password=<string>` — set/clear AP password (min 8 chars if non-empty) |
 
-Static IP is optional. When set, credentials are stored in NVS (`wifi-cfg` namespace,
-keys `sip`/`sgw`/`ssn`/`sdns`); absent keys fall back to DHCP.
+Static IP is optional. When set, stored in NVS (`wifi-cfg`, keys `sip`/`sgw`/`ssn`/`sdns`); absent keys fall back to DHCP.
+
+**NTP:** When STA connects, the gateway automatically calls `configTime()` with `pool.ntp.org`
+and the stored timezone offset (`tzoff` key, default UTC+0). The `/api/status` and `/api/wifistatus`
+responses include `ntpSynced`. While NTP is active, `set_time` WS commands are echoed back
+to the requesting client without overwriting the synced clock. NTP re-anchors every hour.
 
 A DNS catch-all redirects all queries to 192.168.4.1 while the AP is active, acting as
 a captive portal for Android, iOS/macOS, Windows, and Firefox OS detection flows.
 
-### REST — Encrypted builds only (`LORA_ENCRYPTED`)
+### REST — Encrypted builds only (`PKT_ENCRYPTION`)
 
 | Method | Path             | Body / Response                                   |
 | ------ | ---------------- | ------------------------------------------------- |
@@ -371,7 +430,7 @@ Always use `[PREFIX]` format so output is grep-able.
 
 ### Packet structs
 
-- All packet structs in `lora_tdma_protocol.h` must be `#pragma pack(1)`.
+- All packet structs in `tdma_protocol.h` must be `#pragma pack(1)`.
 - Never add pointer members — packets are copied directly into/out of radio buffers.
 - Fixed-point encoding: voltage ÷ 10, current ÷ 1000, power ÷ 10, frequency ÷ 10,
   power factor ÷ 100.
@@ -382,7 +441,7 @@ Always use `[PREFIX]` format so output is grep-able.
 - **LittleFS** is only for the web SPA (index.html, app.js, etc.); do not add new file types
   without considering flash wear and mount-failure recovery. Node labels are stored in FRAM, not LittleFS.
 - **NVS** namespaces in use:
-  - `wifi-cfg` — keys `ssid`, `pass`, `sip`, `sgw`, `ssn`, `sdns` (static IP, optional)
+  - `wifi-cfg` — keys `ssid`, `pass` (STA credentials); `sip`, `sgw`, `ssn`, `sdns` (static IP, optional); `tzoff` (int32 seconds east of UTC, default 0); `appass` (AP password, optional); `dashpass` (dashboard login password, optional)
   - `lora-net` — key `aeskey` (16-byte AES key, encrypted builds only)
 
 ### Async logging
