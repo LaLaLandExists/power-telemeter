@@ -26,14 +26,14 @@ The network follows a star topology: one gateway acts as the TDMA master and all
 
 The SX1278 transceiver implements the LoRa chirp-spread-spectrum (CSS) physical layer. The selected parameters are:
 
-| Parameter       | Value           |
-|-----------------|-----------------|
-| Frequency       | 433 MHz ISM band |
-| Bandwidth       | 125 kHz         |
-| Spreading Factor | SF6            |
-| Coding Rate     | 4/5             |
-| TX Power        | 10 dBm          |
-| Sync Word       | 0x12 (private)  |
+| Parameter        | Value            |
+| :--------------- | :--------------- |
+| Frequency        | 433 MHz ISM band |
+| Bandwidth        | 125 kHz          |
+| Spreading Factor | SF6              |
+| Coding Rate      | 4/5              |
+| TX Power         | 10 dBm           |
+| Sync Word        | 0x12 (private)   |
 
 SF6 at 125 kHz yields a symbol duration of 0.512 ms and represents the highest data rate available on the SX1278. The 8-byte BeaconPacket has a time-on-air of approximately 18 ms; the 32-byte TelemetryPacket approximately 34 ms. The link budget at 10 dBm output and SX1278 sensitivity of approximately −118 dBm at SF6 is around 126 dB, sufficient for intra-building ranges of 100–300 m. SF6 is chosen over higher spreading factors because minimising time-on-air per slot is the primary constraint in a tight TDMA budget; the deployment environment does not require the extended range that higher SFs provide.
 
@@ -117,14 +117,14 @@ Floating-point sensor values are encoded as integers with implicit scale factors
 
 Each sensor node interfaces with a PZEM-004T v3 power meter via UART (Modbus-RTU, 9600 baud) on ESP32 UART2 (TX=GPIO22 → PZEM RX, RX=GPIO23 ← PZEM TX; S3 Super Mini uses TX=GPIO43, RX=GPIO44). The PZEM-004T v3 measures:
 
-| Parameter     | Range          | Resolution |
-|---------------|----------------|------------|
-| Voltage (V)   | 80–260 V AC    | 0.1 V      |
-| Current (A)   | 0–100 A        | 0.001 A    |
-| Active Power (W) | 0–23 kW    | 0.1 W      |
-| Energy (Wh)   | 0–9999.99 kWh  | 1 Wh       |
-| Frequency (Hz)| 45–65 Hz       | 0.1 Hz     |
-| Power Factor  | 0.00–1.00      | 0.01       |
+| Parameter        | Range          | Resolution |
+| :--------------- | :------------- | ---------: |
+| Voltage (V)      | 80–260 V AC    |      0.1 V |
+| Current (A)      | 0–100 A        |    0.001 A |
+| Active Power (W) | 0–23 kW        |      0.1 W |
+| Energy (Wh)      | 0–9999.99 kWh  |       1 Wh |
+| Frequency (Hz)   | 45–65 Hz       |     0.1 Hz |
+| Power Factor     | 0.00–1.00      |       0.01 |
 
 The PZEM-004T v3 uses a current transformer for non-invasive AC current measurement and is among the most cited low-cost energy monitoring ICs in embedded IoT literature [9]. Taner et al. [9] validated PZEM-004T v3 accuracy against calibrated reference instruments and reported errors within ±1% for voltage and ±1.5% for current — sufficient for load monitoring and demand management applications.
 
@@ -154,16 +154,16 @@ The gateway accumulates these deltas into a persistent 32-bit total (`accumEnerg
 
 FreeRTOS on the dual-core ESP32 is used as follows:
 
-| Task        | Core | Priority | Stack  | Purpose                                       |
-|-------------|------|----------|--------|-----------------------------------------------|
-| GW_TDMA     | 1    | 2        | 8 KB   | Radio timing, beacon, UL/DL slots             |
-| NODE_TDMA   | 1    | 2        | 8 KB   | Beacon listen, DL receive, UL transmit        |
-| PZEM        | 0    | 1        | 4 KB   | Modbus sampling (continuous, ~500 ms period)  |
-| SCHED       | 0    | 1        | 2 KB   | Relay schedule evaluation (10 s period)       |
-| LED         | 0    | 1        | 2 KB   | Two-color state LED + nudge blink             |
-| FRAM        | 0    | 0        | 2 KB   | Deferred I²C FRAM writes (queue-driven)       |
-| Log drain   | 0    | 1        | 2 KB   | Async serial output + WebSocket relay         |
-| Web/WiFi    | 0    | 1        | ESP-IDF managed | HTTP, WebSocket                     |
+| Task      | Core | Priority | Stack           | Purpose                                      |
+| :-------- | :--: | :------: | :-------------- | :------------------------------------------- |
+| GW_TDMA   | 1    | 2        | 8 KB            | Radio timing, beacon, UL/DL slots            |
+| NODE_TDMA | 1    | 2        | 8 KB            | Beacon listen, DL receive, UL transmit       |
+| PZEM      | 0    | 1        | 4 KB            | Modbus sampling (continuous, ~500 ms period) |
+| SCHED     | 0    | 1        | 2 KB            | Relay schedule evaluation (10 s period)      |
+| LED       | 0    | 1        | 2 KB            | Two-color state LED + nudge blink            |
+| FRAM      | 0    | 0        | 2 KB            | Deferred I²C FRAM writes (queue-driven)      |
+| Log drain | 0    | 1        | 2 KB            | Async serial output + WebSocket relay        |
+| Web/WiFi  | 0    | 1        | ESP-IDF managed | HTTP, WebSocket                              |
 
 > **S3 Super Mini note:** On ESP32-S3 (Xtensa LX7), interrupt/exception frames are larger than on the LX6. Any Core 0 task that calls `logAsync` (which invokes `vsnprintf`) requires ≥ 2048 bytes of stack; 1024 bytes overflows silently and manifests as a stack-canary panic on the first formatted log call.
 
@@ -216,15 +216,15 @@ The SPA communicates with the gateway exclusively through WebSocket for real-tim
 
 The REST API follows a resource-oriented design:
 
-| Method | Path                       | Use                                    |
-|--------|----------------------------|----------------------------------------|
-| GET    | `/api/nodes`             | All registered node states             |
-| GET    | `/api/node/{id}/live`    | Latest reading for one node            |
-| GET    | `/api/node/{id}/history` | 120-point V/I/P ring buffer            |
-| POST   | `/api/node/{id}/relay`   | Relay toggle (HTTP fallback)           |
-| POST   | `/api/node/{id}/name`    | Node label rename                      |
-| POST   | `/api/time`              | Set gateway RTC                        |
-| GET    | `/api/status`            | System health (heap, uptime, Wi-Fi)    |
+| Method | Path                     | Use                                 |
+| :----- | :----------------------- | :---------------------------------- |
+| GET    | `/api/nodes`             | All registered node states          |
+| GET    | `/api/node/{id}/live`    | Latest reading for one node         |
+| GET    | `/api/node/{id}/history` | 120-point V/I/P ring buffer         |
+| POST   | `/api/node/{id}/relay`   | Relay toggle (HTTP fallback)        |
+| POST   | `/api/node/{id}/name`    | Node label rename                   |
+| POST   | `/api/time`              | Set gateway RTC                     |
+| GET    | `/api/status`            | System health (heap, uptime, Wi-Fi) |
 
 A separate WiFi configuration API (`/api/scan`, `/api/connect`, `/api/wifistatus`, `/api/disconnect`, `/api/forget`) manages dual AP+STA operation, storing credentials in the ESP32's Non-Volatile Storage (NVS) namespace.
 
@@ -289,18 +289,18 @@ CRC-16/CCITT (poly 0x1021, init 0xFFFF) has a minimum Hamming distance of 4 for 
 
 ## 11. Summary of Design Decisions
 
-| Requirement                          | Design Choice                                    | Rationale                                         |
-|--------------------------------------|--------------------------------------------------|---------------------------------------------------|
-| Multi-node collision-free uplink     | TDMA superframe (3000 ms period)                 | Bounded latency, no hidden-node collisions [5]    |
-| Narrowband interference resilience   | Frequency-hopping channel plan                   | Distributed interference exposure [4]             |
-| Sub-3 s telemetry update rate        | SF6, 125 kHz BW, 165 ms DL-first slots          | Maximises data rate; minimises time-on-air [3]    |
-| Energy accumulation across resets    | Delta encoding + FRAM persistence                | Counter-rollover immunity; NVS wear avoidance [13] |
-| Slot persistence across reboots      | Cross-slot UID lookup + deferred FRAM restore    | Node data survives slot reassignment              |
-| Stale slot detection                 | Network epoch in BeaconPacket                    | Guarantees re-contention when topology changes    |
-| Web UI without cloud dependency      | ESP32 AP+STA + LittleFS SPA                     | Self-contained; works without internet [14]       |
-| Real-time command delivery           | WebSocket over ESPAsyncWebServer                 | Low-latency bidirectional push [15]               |
-| Wi-Fi stack isolation from radio     | Core pinning + FreeRTOS priority                 | ESP32 dual-core RTOS best practice [11]           |
-| Schedule reliability                 | Dual-clock with hysteresis correction            | Prevents relay chatter from UI clock jitter       |
+| Requirement                           | Design Choice                                        | Rationale                                                |
+| :------------------------------------ | :--------------------------------------------------- | :------------------------------------------------------- |
+| Multi-node collision-free uplink      | TDMA superframe (3000 ms period)                     | Bounded latency, no hidden-node collisions [5]           |
+| Narrowband interference resilience    | Frequency-hopping channel plan                       | Distributed interference exposure [4]                    |
+| Sub-3 s telemetry update rate         | SF6, 125 kHz BW, 165 ms DL-first slots              | Maximises data rate; minimises time-on-air [3]           |
+| Energy accumulation across resets     | Delta encoding + FRAM persistence                    | Counter-rollover immunity; NVS wear avoidance [13]       |
+| Slot persistence across reboots       | Cross-slot UID lookup + deferred FRAM restore        | Node data survives slot reassignment                     |
+| Stale slot detection                  | Network epoch in BeaconPacket                        | Guarantees re-contention when topology changes           |
+| Web UI without cloud dependency       | ESP32 AP+STA + LittleFS SPA                          | Self-contained; works without internet [14]              |
+| Real-time command delivery            | WebSocket over ESPAsyncWebServer                     | Low-latency bidirectional push [15]                      |
+| Wi-Fi stack isolation from radio      | Core pinning + FreeRTOS priority                     | ESP32 dual-core RTOS best practice [11]                  |
+| Schedule reliability                  | Dual-clock with hysteresis correction                | Prevents relay chatter from UI clock jitter              |
 | Optional relay-command authentication | AES-128 CTR + RFID key provisioning (PKT_ENCRYPTION) | No-overhead cipher; physical proximity as trust boundary |
 
 ---
