@@ -6,14 +6,14 @@
  *
  * Timing model (DL-first slot ordering):
  *   - The node records beaconReceiveTime = millis() when a beacon lands.
- *   - dlStart = beaconReceiveTime + (BEACON_MS - BEACON_AIR_MS) + (slotId-1) × SLOT_PAIR_MS
+ *   - dlStart = beaconReceiveTime + (BEACON_MS - BEACON_AIR_MS) + (slotId-1) x SLOT_PAIR_MS
  *   - Node RX DL during [dlStart, dlStart + SLOT_DL_MS); self-evicts on UID mismatch.
  *   - txTime = dlStart + SLOT_DL_MS; node TX UL if still registered after DL check.
  *   - PZEM task refreshes g_pzem continuously (~500 ms); no explicit pre-read wait.
  *   - After UL, node returns to LISTEN on Ch 0 for the next beacon.
  *
  * Dual clock:
- *   Clock 1 (TDMA timing) - re-derived from each beacon.  µs-level discipline.
+ *   Clock 1 (TDMA timing) - re-derived from each beacon.  us-level discipline.
  *   Clock 2 (Schedule RTC) - free-running millis() based wall clock.
  *                             Updated only when |delta| > RTC_CORRECTION_THRESHOLD_MS.
  *
@@ -107,7 +107,7 @@ static void rtcConditionalSync(uint8_t beaconH, uint8_t beaconM, uint8_t beaconS
   uint32_t localSec  = rtcGetSec();
   int32_t  delta_ms  = (int32_t)(localSec  - beaconSec) * 1000;
 
-  // Handle midnight wrap (±12 h window)
+  // Handle midnight wrap (+/-12 h window)
   if (delta_ms >  43200000L) delta_ms -= 86400000L;
   if (delta_ms < -43200000L) delta_ms += 86400000L;
 
@@ -132,10 +132,10 @@ static void evaluateSchedule() {
 
   bool inside;
   if (startMins <= endMins) {
-    // Normal window: 08:00–17:00
+    // Normal window: 08:00-17:00
     inside = (nowMins >= startMins && nowMins < endMins);
   } else {
-    // Midnight-wrap: 22:00–06:00 -> inside if >=22:00 OR <06:00
+    // Midnight-wrap: 22:00-06:00 -> inside if >=22:00 OR <06:00
     inside = (nowMins >= startMins || nowMins < endMins);
   }
 
@@ -146,7 +146,7 @@ static void evaluateSchedule() {
              inside ? "ACTIVE" : "WAITING",
              nowMins / 60, nowMins % 60);
   }
-  // Always enforce relay to match schedule — handles initial activation where
+  // Always enforce relay to match schedule -- handles initial activation where
   // g_schedState was pre-set to WAITING (1) so no state change is detected,
   // yet the relay still needs to be driven to match the window state.
   setRelay(inside ? 1 : 0);
@@ -297,7 +297,7 @@ static void handleDownlink(const uint8_t* buf, int16_t len) {
   case PKT_THRESHOLD:      // 4 bytes: DlHeader + thresh_lo + thresh_hi
     if (len >= 4) {
       uint16_t watts = (uint16_t)buf[2] | ((uint16_t)buf[3] << 8);
-      // Queue the write for pzemTask — it is the sole owner of Serial2.
+      // Queue the write for pzemTask -- it is the sole owner of Serial2.
       if (xSemaphoreTake(g_pzemMutex, pdMS_TO_TICKS(100)) == pdTRUE) {
         g_pzem.alarmThreshold      = watts;
         g_pzem.pendingThresholdW   = watts;
@@ -314,7 +314,7 @@ static void handleDownlink(const uint8_t* buf, int16_t len) {
 
   default:
     logAsync("[NODE-DL] Unknown packet type 0x%02X\n", type);
-    return; // unknown — do not set dlAck
+    return; // unknown -- do not set dlAck
   }
   s_dlAck = true;
 }
@@ -436,7 +436,7 @@ static void nodeTdmaTask(void* /*params*/) {
     if (state == ST_LISTEN || state == ST_CONTENDING || state == ST_REGISTERED) {
       // Wait up to the listen timeout for a valid beacon on Ch 0.
       // Stray packets (DL/UL from other slots bleeding through) restart the
-      // receive without consuming the full window — only a genuine timeout or
+      // receive without consuming the full window -- only a genuine timeout or
       // a valid beacon exits the loop.
       uint8_t buf[64];
       radio.setFrequency(LORA_CHANNELS[0]);
@@ -455,7 +455,7 @@ static void nodeTdmaTask(void* /*params*/) {
         int32_t remaining = (int32_t)(listenDeadline - millis());
         if (remaining <= 0) break;
 
-        // standby() before startReceive() — the radio may be left in RXCONTINUOUS
+        // standby() before startReceive() -- the radio may be left in RXCONTINUOUS
         // mode by a previous timeout (JoinAck window, stale packet loop) or by the
         // initial startReceive() at startup.  startReceive() on SX1278 returns
         // RADIOLIB_ERR_UNSUPPORTED (-25) if called while already in RX mode.
@@ -493,7 +493,7 @@ static void nodeTdmaTask(void* /*params*/) {
         if (g_nodeRegistered) {
           // Epoch mismatch means the gateway rebooted or reassigned slots since
           // we joined.  Our slot bit may be set by a *different* device now, so
-          // the slotMask check alone is not sufficient — re-contend to get a
+          // the slotMask check alone is not sufficient -- re-contend to get a
           // fresh slot assignment from the gateway.
           if (bcn.epoch != s_joinEpoch) {
             logAsync("[NODE-TDMA] Epoch changed (%d->%d) - re-registering\n",
@@ -535,7 +535,7 @@ static void nodeTdmaTask(void* /*params*/) {
 
     // -- CONTENDING: transmit join request in contention window -----------
     if (state == ST_CONTENDING) {
-      // Same sfStart compensation as txTime — beacon on-air shifts beaconReceiveTime.
+      // Same sfStart compensation as txTime -- beacon on-air shifts beaconReceiveTime.
       uint32_t cwStart = beaconReceiveTime
                              + (BEACON_MS - BEACON_AIR_MS)
                              + (uint32_t)MAX_NODES * SLOT_PAIR_MS;
@@ -598,7 +598,7 @@ static void nodeTdmaTask(void* /*params*/) {
     // -- REGISTERED: receive DL first (ghost check), then transmit UL -----
     if (state == ST_REGISTERED) {
       // Slot start anchored to gateway sfStart via beacon receive time.
-      // beaconReceiveTime ≈ sfStart + BEACON_AIR_MS, so subtracting BEACON_AIR_MS
+      // beaconReceiveTime ~= sfStart + BEACON_AIR_MS, so subtracting BEACON_AIR_MS
       // recovers sfStart, then adding BEACON_MS reaches the slot-1 DL open time.
       uint8_t  ch      = hopChannel(sfCount, g_nodeSlotId);
       uint32_t dlStart = beaconReceiveTime

@@ -5,8 +5,8 @@
  * Compiled only when -D PKT_ENCRYPTION is set.
  *
  * Key storage: NVS namespace "lora-net", key "aeskey" (16-byte blob).
- * Gateway: cryptoLoadKey() → if false → cryptoGenerateKey() → rfidProvisionWrite().
- * Node:    cryptoLoadKey() → if false → rfidProvisionRead() → cryptoSetKey() → reboot.
+ * Gateway: cryptoLoadKey() -> if false -> cryptoGenerateKey() -> rfidProvisionWrite().
+ * Node:    cryptoLoadKey() -> if false -> rfidProvisionRead() -> cryptoSetKey() -> reboot.
  */
 #pragma once
 #ifdef PKT_ENCRYPTION
@@ -31,7 +31,7 @@ const uint8_t* cryptoGetKey();
 
 /**
  * AES-128 CTR encrypt / decrypt (same operation) in-place.
- * Nonce: [sfCount_lo | sfCount_hi | slotId | dir | 0x00×12]
+ * Nonce: [sfCount_lo | sfCount_hi | slotId | dir | 0x00 x 12]
  * No-op if cryptoHasKey() is false.
  */
 void cryptoProcess(uint8_t* buf, size_t len,

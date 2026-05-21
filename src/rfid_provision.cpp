@@ -23,27 +23,27 @@
 #elif defined(NODE_TELEMETRY) && defined(BOARD_S3_SUPERMINI)
   #define PN532_SDA       1
   #define PN532_SCL       2
-  #define PN532_IRQ_DUMMY 8    // freed by LoRa pin assignment; dummy only — not physically wired
+  #define PN532_IRQ_DUMMY 8    // freed by LoRa pin assignment; dummy only -- not physically wired
 #elif defined(NODE_TELEMETRY)
   #define PN532_SDA       16
   #define PN532_SCL       17
   #define PN532_IRQ_DUMMY 35
 #else
-  #error "rfid_provision: role not defined — set NODE_GATEWAY or NODE_TELEMETRY"
+  #error "rfid_provision: role not defined -- set NODE_GATEWAY or NODE_TELEMETRY"
 #endif
 
 // PN532_IRQ_DUMMY / GPIO 0 as RST dummy.
 // Adafruit_PN532 calls pinMode() unconditionally in its I2C constructor, so
-// passing 0xFF (→ int8_t -1 → uint8_t 255) triggers the ESP32 HAL invalid-pin
+// passing 0xFF (-> int8_t -1 -> uint8_t 255) triggers the ESP32 HAL invalid-pin
 // warning. Neither dummy is physically connected to the PN532; the IRQ line is
 // never read (polling mode) and the RST pulse during begin() is harmless on an
 // unconnected GPIO.
 static Adafruit_PN532 s_nfc(PN532_IRQ_DUMMY, 0, &Wire);
 static bool           s_initOk = false;
 
-// MIFARE Classic sector 1, block 0 — stores 16-byte AES key
+// MIFARE Classic sector 1, block 0 -- stores 16-byte AES key
 static const uint8_t RFID_KEY_BLOCK = 4;
-// Default factory Key A — change if you want physical write protection
+// Default factory Key A -- change if you want physical write protection
 static const uint8_t KEY_A[6] = { 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF };
 
 bool rfidProvisionInit() {
@@ -107,7 +107,7 @@ bool rfidProvisionWrite(const uint8_t* key16) {
 
   uint8_t uid[7];
   uint8_t uidLen;
-  // 5 second timeout — give the user time to present the card
+  // 5 second timeout -- give the user time to present the card
   if (!s_nfc.readPassiveTargetID(PN532_MIFARE_ISO14443A, uid, &uidLen, 5000)) {
     logAsync("[RFID] No card detected (5 s timeout)\n");
     return false;

@@ -9,7 +9,7 @@
 /**
  * Initialize web server and register all REST + WebSocket handlers.
  * Node labels are loaded from FRAM via framLoadAll() in main.cpp before
- * this is called — no file I/O happens here.
+ * this is called -- no file I/O happens here.
  */
 void webServerSetup();
 
@@ -21,7 +21,7 @@ void webBroadcastTaskStart();
 
 /**
  * Enqueue a telemetry broadcast for slotIdx.
- * Non-blocking — safe to call from the TDMA task on Core 1.
+ * Non-blocking -- safe to call from the TDMA task on Core 1.
  * The actual JSON serialisation and ws.textAll() happen on Core 0.
  *
  * @param slotIdx  0-based slot index into g_nodes[]

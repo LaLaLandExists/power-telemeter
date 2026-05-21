@@ -2,7 +2,7 @@
  * tdma_protocol.h
  * Shared header for gateway AND node firmware.
  *
- * Protocol v1.0 — SF6 / 125 kHz / 433 MHz / 8-node star topology
+ * Protocol v1.0 -- SF6 / 125 kHz / 433 MHz / 8-node star topology
  */
 #pragma once
 #include <Arduino.h>
@@ -25,15 +25,15 @@
 #define LORA_BANDWIDTH      125.0f   // kHz
 #define LORA_SF             6
 #define LORA_CR             5        // RadioLib value: 5 = 4/5 coding rate
-#define LORA_TX_POWER       10       // dBm, PA_BOOST pin — 10 mW ERP limit (NTC 433 MHz ISM)
+#define LORA_TX_POWER       10       // dBm, PA_BOOST pin -- 10 mW ERP limit (NTC 433 MHz ISM)
 #define LORA_PREAMBLE_LEN   8
 
 // -----------------------------------------------------------------------------
-// Channel plan — 433 MHz ISM, 200 kHz spacing
+// Channel plan -- 433 MHz ISM, 200 kHz spacing
 // Ch 0 is the fixed rendezvous channel (beacon + contention).
 // -----------------------------------------------------------------------------
 static const float LORA_CHANNELS[N_CHANNELS] = {
-  433.050f,   // Ch 0 — Beacon + contention (FIXED)
+  433.050f,   // Ch 0 -- Beacon + contention (FIXED)
   433.250f,   // Ch 1
   433.450f,   // Ch 2
   433.650f,   // Ch 3
@@ -46,16 +46,16 @@ static const float LORA_CHANNELS[N_CHANNELS] = {
 // -----------------------------------------------------------------------------
 // TDMA timing constants (milliseconds)
 //
-// Superframe = Beacon + N×SlotPair + CWin_UL + CWin_DL + Idle + EndGuard
-//            = 40 + 8×165 + 60 + 40 + 1520 + 20 = 3000 ms
+// Superframe = Beacon + N x SlotPair + CWin_UL + CWin_DL + Idle + EndGuard
+//            = 40 + 8 x 165 + 60 + 40 + 1520 + 20 = 3000 ms
 //
-// SlotPair breakdown — DL-first ordering:
-//   DL window  : 50 ms  (GW TX → node RX; ~11 ms airtime, 4.5× margin)
-//   UL window  : 100 ms (node TX → GW RX; kept wide to absorb beacon-latency jitter)
+// SlotPair breakdown -- DL-first ordering:
+//   DL window  : 50 ms  (GW TX -> node RX; ~11 ms airtime, 4.5 x margin)
+//   UL window  : 100 ms (node TX -> GW RX; kept wide to absorb beacon-latency jitter)
 //   Guard      : 15 ms  (SX1278 mode-switch <1 ms; 15 ms covers FreeRTOS tick budget)
 //
 // UL window is intentionally NOT reduced: the node's TX start lags the gateway's
-// RX open by beacon-arrival latency (~2–5 ms) + radio setup overhead.  The 20 ms
+// RX open by beacon-arrival latency (~2-5 ms) + radio setup overhead.  The 20 ms
 // pad over TelemetryPacket airtime (~34 ms) has been observed as necessary.
 //
 // The 360 ms IDLE_MS recovered from tighter slots is placed after the contention
@@ -73,7 +73,7 @@ static const float LORA_CHANNELS[N_CHANNELS] = {
 #define IDLE_MS                 1520    // post-contention idle window; includes 360 ms recovered from slot guard reductions + 1160 ms intentional SF extension
 #define END_GUARD_MS            20     // RF-quiet buffer before next beacon TX
 
-// Total superframe duration — adjust IDLE_MS to change the period; verify the
+// Total superframe duration -- adjust IDLE_MS to change the period; verify the
 // computed value matches the dashboard's SUPERFRAME_MS constant in app.js.
 #define SUPERFRAME_MS \
   (BEACON_MS + MAX_NODES * SLOT_PAIR_MS + \
@@ -81,7 +81,7 @@ static const float LORA_CHANNELS[N_CHANNELS] = {
 
 // On-air duration of an 8-byte BeaconPacket at SF6 / 125 kHz / CR 4:5,
 // 8-symbol preamble, implicit header, CRC enabled.
-// Ts = 2^6/125000 = 0.512 ms; ToA = (12.25 + 23) × 0.512 = 18.048 ms → 18 ms.
+// Ts = 2^6/125000 = 0.512 ms; ToA = (12.25 + 23) x 0.512 = 18.048 ms -> 18 ms.
 // The node receives the beacon BEACON_AIR_MS after the gateway begins transmitting it,
 // so it must subtract this value when anchoring its slot times to sfStart.
 #define BEACON_AIR_MS           18
@@ -107,18 +107,18 @@ static const float LORA_CHANNELS[N_CHANNELS] = {
 #define PKT_JOIN_ACK            0xA1    // GW   -> Node,  4 bytes
 
 // -----------------------------------------------------------------------------
-// Packet structures — all packed to avoid alignment padding
+// Packet structures -- all packed to avoid alignment padding
 // -----------------------------------------------------------------------------
 #pragma pack(push, 1)
 
 /**
- * BeaconPacket (8 bytes) — broadcast on Ch 0 at superframe start.
+ * BeaconPacket (8 bytes) -- broadcast on Ch 0 at superframe start.
  * Provides: time sync, superframe counter (hop seed), occupied slot bitmask,
  * and a network epoch for stale-registration detection.
  *
  * On-wire layout (PKT_ENCRYPTION builds):
- *   bytes 0-1  sfCount  — plaintext; node reads this before decryption to build the nonce
- *   bytes 2-7  <rest>   — AES-128 CTR encrypted with nonce (sfCount, slotId=0, PKT_DIR_BEACON)
+ *   bytes 0-1  sfCount  -- plaintext; node reads this before decryption to build the nonce
+ *   bytes 2-7  <rest>   -- AES-128 CTR encrypted with nonce (sfCount, slotId=0, PKT_DIR_BEACON)
  * In plain builds the full packet is sent unencrypted (same struct layout).
  *
  * epoch: initialised to esp_random() on gateway boot; incremented by 1 on every
@@ -130,15 +130,15 @@ struct BeaconPacket {
   uint16_t sfCount;    // bytes 0-1: plaintext on wire - superframe counter, hop seed
   uint8_t  pktType;    // byte 2:  0x04 (encrypted in PKT_ENCRYPTION builds)
   uint8_t  epoch;      // byte 3:  network epoch - incremented every node eviction
-  uint8_t  hour;       // byte 4:  0–23
-  uint8_t  minute;     // byte 5:  0–59
-  uint8_t  second;     // byte 6:  0–59
+  uint8_t  hour;       // byte 4:  0-23
+  uint8_t  minute;     // byte 5:  0-59
+  uint8_t  second;     // byte 6:  0-59
   uint8_t  slotMask;   // byte 7:  bit N = slot (N+1) occupied
 };
 static_assert(sizeof(BeaconPacket) == 8, "BeaconPacket must be 8 bytes");
 
 /**
- * TelemetryPacket (30 bytes) — node uplink every superframe.
+ * TelemetryPacket (30 bytes) -- node uplink every superframe.
  * Status byte packs relayState, relayMode, schedState, alarmState.
  *
  * statusByte layout:
@@ -150,14 +150,14 @@ static_assert(sizeof(BeaconPacket) == 8, "BeaconPacket must be 8 bytes");
  */
 struct TelemetryPacket {
   uint8_t  pktType;          // 0x01
-  uint8_t  nodeId;           // 1–8 (assigned slot ID)
-  uint16_t uid;              // CRC-16 of node MAC — gateway verifies slot ownership
-  uint16_t voltage;          // ÷10  -> volts     (2204 = 220.4 V)
-  uint32_t current;          // ÷1000 -> amps     (2345 = 2.345 A)
-  uint32_t power;            // ÷10  -> watts     (5163 = 516.3 W)
+  uint8_t  nodeId;           // 1-8 (assigned slot ID)
+  uint16_t uid;              // CRC-16 of node MAC -- gateway verifies slot ownership
+  uint16_t voltage;          // /10  -> volts     (2204 = 220.4 V)
+  uint32_t current;          // /1000 -> amps     (2345 = 2.345 A)
+  uint32_t power;            // /10  -> watts     (5163 = 516.3 W)
   uint32_t energy;           // Wh increment since last packet (node-side delta; handles rollover)
-  uint16_t frequency;        // ÷10  -> Hz        (600  = 60.0 Hz)
-  uint16_t powerFactor;      // ÷100 -> 0.00–1.00 (98   = 0.98)
+  uint16_t frequency;        // /10  -> Hz        (600  = 60.0 Hz)
+  uint16_t powerFactor;      // /100 -> 0.00-1.00 (98   = 0.98)
   uint8_t  statusByte;       // packed bitfield (see above)
   uint8_t  schedSH;          // Schedule start hour
   uint8_t  schedSM;          // Schedule start minute
@@ -165,16 +165,16 @@ struct TelemetryPacket {
   uint8_t  schedEM;          // Schedule end minute
   uint16_t alarmThreshold;   // watts
   // seqCounter wire layout:
-  //   bit  7   : dlAck — set by node when a DL packet was decoded this superframe (one-shot, cleared after TX)
-  //   bits 6:0 : rolling counter 0–127, increments every UL, for packet-loss detection
+  //   bit  7   : dlAck -- set by node when a DL packet was decoded this superframe (one-shot, cleared after TX)
+  //   bits 6:0 : rolling counter 0-127, increments every UL, for packet-loss detection
   uint8_t  seqCounter;
-  uint8_t  beaconRSSI;       // int8 cast to uint8 — RSSI of last beacon (dBm)
+  uint8_t  beaconRSSI;       // int8 cast to uint8 -- RSSI of last beacon (dBm)
   uint8_t  fwVersion;        // Firmware version
 };
 static_assert(sizeof(TelemetryPacket) == 32, "TelemetryPacket must be 32 bytes");
 
 /**
- * DlHeader (2 bytes) — base for every gateway->node downlink packet.
+ * DlHeader (2 bytes) -- base for every gateway->node downlink packet.
  *
  * Slot ownership is validated by the epoch field in BeaconPacket: if
  * bcn.epoch != s_joinEpoch the node re-contends before the next data slot,
@@ -191,13 +191,13 @@ struct DlHeader {
 };
 static_assert(sizeof(DlHeader) == 2, "DlHeader must be 2 bytes");
 
-/** RelayCommandPacket (3 bytes) — immediate relay toggle */
+/** RelayCommandPacket (3 bytes) -- immediate relay toggle */
 struct RelayCommandPacket : DlHeader {
   uint8_t relayState;   // 0=OFF, 1=ON
 };
 static_assert(sizeof(RelayCommandPacket) == 3, "RelayCommandPacket must be 3 bytes");
 
-/** RelaySchedulePacket (7 bytes) — daily recurring window */
+/** RelaySchedulePacket (7 bytes) -- daily recurring window */
 struct RelaySchedulePacket : DlHeader {
   uint8_t onState;    // Relay state INSIDE the window (1=ON is the normal case)
   uint8_t startH;
@@ -207,22 +207,22 @@ struct RelaySchedulePacket : DlHeader {
 };
 static_assert(sizeof(RelaySchedulePacket) == 7, "RelaySchedulePacket must be 7 bytes");
 
-/** RelayClearPacket (2 bytes) — cancel active schedule, revert to manual */
+/** RelayClearPacket (2 bytes) -- cancel active schedule, revert to manual */
 struct RelayClearPacket : DlHeader {};
 static_assert(sizeof(RelayClearPacket) == 2, "RelayClearPacket must be 2 bytes");
 
-/** ThresholdPacket (4 bytes) — set PZEM over-power alarm */
+/** ThresholdPacket (4 bytes) -- set PZEM over-power alarm */
 struct ThresholdPacket : DlHeader {
   uint8_t thresh_lo;   // watts, little-endian
   uint8_t thresh_hi;
 };
 static_assert(sizeof(ThresholdPacket) == 4, "ThresholdPacket must be 4 bytes");
 
-/** NudgePacket (2 bytes) — blink LED for physical identification */
+/** NudgePacket (2 bytes) -- blink LED for physical identification */
 struct NudgePacket : DlHeader {};
 static_assert(sizeof(NudgePacket) == 2, "NudgePacket must be 2 bytes");
 
-/** JoinRequestPacket (4 bytes) — contention uplink from new node */
+/** JoinRequestPacket (4 bytes) -- contention uplink from new node */
 struct JoinRequestPacket {
   uint8_t  pktType;    // 0xA0
   uint8_t  uid_lo;
@@ -230,12 +230,12 @@ struct JoinRequestPacket {
   uint8_t  fwVersion;
 };
 
-/** JoinAckPacket (4 bytes) — contention downlink from gateway */
+/** JoinAckPacket (4 bytes) -- contention downlink from gateway */
 struct JoinAckPacket {
   uint8_t pktType;    // 0xA1
   uint8_t uid_lo;
   uint8_t uid_hi;
-  uint8_t slotId;     // 1–8
+  uint8_t slotId;     // 1-8
 };
 
 #pragma pack(pop)
@@ -263,7 +263,7 @@ inline uint8_t decodeAlarmState(uint8_t s)  { return (s >> 4)  & 0x01; }
 // -----------------------------------------------------------------------------
 // Hop sequence
 //
-// channel = (sfCount × 7 + slotId) % N_CHANNELS
+// channel = (sfCount x 7 + slotId) % N_CHANNELS
 // Multiplier 7 is coprime to 8 -> over 8 superframes each slot visits all channels.
 // Beacon and contention always use Ch 0, regardless.
 // -----------------------------------------------------------------------------

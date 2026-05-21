@@ -49,7 +49,7 @@ void logAsync(const char* fmt, ...) {
       s_logHead++;
     }
   }
-  // else: buffer full — drop silently
+  // else: buffer full -- drop silently
   portEXIT_CRITICAL(&s_logMux);
 }
 

@@ -11,7 +11,7 @@
  *   Gateway: SDA=16, SCL=17 (shared I2C bus with FRAM; PN532 addr=0x48, FRAM addr=0x50)
  *   Node:    SDA=16, SCL=17  (shared layout with gateway; GPIO16=RX2, GPIO17=TX2)
  *
- * MIFARE Classic key storage: sector 1 block 4, default Key A (0xFF×6).
+ * MIFARE Classic key storage: sector 1 block 4, default Key A (0xFF x 6).
  */
 #pragma once
 #ifdef PKT_ENCRYPTION
@@ -19,7 +19,7 @@
 
 /**
  * Initialise the PN532 module.
- * On gateway, Wire.begin() is already called by framInit() — calling it again
+ * On gateway, Wire.begin() is already called by framInit() -- calling it again
  * with the same pins is safe and a no-op.
  * Returns true if the PN532 firmware version is readable.
  */

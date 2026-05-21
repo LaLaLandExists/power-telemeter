@@ -7,7 +7,7 @@
 #include "tdma_protocol.h"
 
 // -----------------------------------------------------------------------------
-// History circular buffer — per node, 120 points, ~3 s apart
+// History circular buffer -- per node, 120 points, ~3 s apart
 // Only v/i/p stored (no energy, PF, frequency) per API spec.
 // -----------------------------------------------------------------------------
 #define HISTORY_MAX_POINTS  120
@@ -20,7 +20,7 @@ struct HistoryPoint {
 };
 
 // -----------------------------------------------------------------------------
-// Pending downlink command — up to 8 bytes, queued per node
+// Pending downlink command -- up to 8 bytes, queued per node
 // -----------------------------------------------------------------------------
 struct PendingCmd {
   bool    active;
@@ -29,13 +29,13 @@ struct PendingCmd {
 };
 
 // -----------------------------------------------------------------------------
-// NodeState — full state for one registered node
+// NodeState -- full state for one registered node
 // Indices: nodes[0] = slot 1, nodes[7] = slot 8
 // -----------------------------------------------------------------------------
 struct NodeState {
   // Registration
   bool     active;            // Slot is occupied
-  uint8_t  slotId;            // 1–8
+  uint8_t  slotId;            // 1-8
   uint16_t deviceUID;         // CRC-16 of MAC (for re-registration)
   char     label[30];         // Human-readable name, e.g., "Electric Fan of Death"
 
@@ -75,7 +75,7 @@ struct NodeState {
 };
 
 // -----------------------------------------------------------------------------
-// Shared gateway state — extern declarations
+// Shared gateway state -- extern declarations
 // Definitions live in gateway_tdma_task.cpp
 // -----------------------------------------------------------------------------
 extern NodeState         g_nodes[MAX_NODES];
@@ -84,7 +84,7 @@ extern uint16_t          g_sfCount;
 extern uint8_t           g_slotMask;
 extern uint8_t           g_networkEpoch;  // incremented on every node eviction; sent in BeaconPacket.epoch
 
-// Gateway clock — NTP-synced in STA mode; falls back to set_time WS / /api/time in AP mode
+// Gateway clock -- NTP-synced in STA mode; falls back to set_time WS / /api/time in AP mode
 extern uint8_t           g_gwHour;
 extern uint8_t           g_gwMinute;
 extern uint8_t           g_gwSecond;

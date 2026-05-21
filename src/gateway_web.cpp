@@ -56,7 +56,7 @@ static uint8_t  s_authWsCount    = 0;
 static QueueHandle_t s_wsBroadcastQueue = nullptr;
 
 // =================================================
-// Auth — NVS, token, session helpers
+// Auth -- NVS, token, session helpers
 // =================================================
 
 static String nvsDashPassLoad() {
@@ -111,7 +111,7 @@ static bool wsIsAuth(uint32_t id) {
 }
 
 // =================================================
-// JSON helpers — build node objects from NodeState
+// JSON helpers -- build node objects from NodeState
 // =================================================
 
 /** Populate a JsonObject with the "summary" fields (used by /api/nodes and nodes push). */
@@ -170,7 +170,7 @@ static void nodeToDetailJson(JsonObject obj, const NodeState &ns)
   obj["time"] = timeBuf;
 }
 
-/** Extract node ID from path like "/api/node/3/live" → 3 */
+/** Extract node ID from path like "/api/node/3/live" -> 3 */
 // TODO implement this using regex if possible
 static int parseNodeIdFromPath(const String &path)
 {
@@ -299,7 +299,7 @@ static void buildNodesDoc(JsonDocument &doc)
 // ----------------------------------------------------------------------------
 static void handleWsMessage(AsyncWebSocketClient *client, const String &payload)
 {
-  // Auth gate — unauthenticated clients may only send cmd:"auth"
+  // Auth gate -- unauthenticated clients may only send cmd:"auth"
   if (!wsIsAuth(client->id())) {
     JsonDocument auth_doc;
     if (deserializeJson(auth_doc, payload) == DeserializationError::Ok) {
@@ -456,7 +456,7 @@ static void handleWsMessage(AsyncWebSocketClient *client, const String &payload)
   // -- set_time -----------------------------------------------------------------
   if (strcmp(cmd, "set_time") == 0)
   {
-    // Always consume the timezone offset when provided — independent of NTP state.
+    // Always consume the timezone offset when provided -- independent of NTP state.
     if (doc["utcOffset"].is<int32_t>())
     {
       int32_t off = (int32_t)doc["utcOffset"];
@@ -471,14 +471,14 @@ static void handleWsMessage(AsyncWebSocketClient *client, const String &payload)
     bcast["timeSet"] = true;
     if (wifiIsNtpSynced())
     {
-      // NTP is authoritative — echo current NTP time back to the requesting
+      // NTP is authoritative -- echo current NTP time back to the requesting
       // client only; do not override the synced clock with browser time.
       bcast["time"]   = timeBuf;
       bcast["source"] = "ntp";
       wsSendToClient(client, bcast);
       return;
     }
-    // NTP not active — accept client time as clock source (AP mode or NTP failed)
+    // NTP not active -- accept client time as clock source (AP mode or NTP failed)
     uint8_t h = (uint8_t)(doc["hour"]   | 0);
     uint8_t m = (uint8_t)(doc["minute"] | 0);
     uint8_t s = (uint8_t)(doc["second"] | 0);
@@ -846,8 +846,8 @@ void webBroadcastAllNodes()
 
 // -----------------------------------------------------------------------------
 // RFID key provisioning (encrypted builds only)
-// POST /api/provision       — kick off card write; returns 202 immediately
-// GET  /api/provision/status — poll for result: idle | pending | ok | fail
+// POST /api/provision       -- kick off card write; returns 202 immediately
+// GET  /api/provision/status -- poll for result: idle | pending | ok | fail
 // The write task runs in the background so the async web handler is not blocked.
 // -----------------------------------------------------------------------------
 #ifdef PKT_ENCRYPTION
@@ -891,8 +891,8 @@ static volatile bool s_keyRegenPending = false;
 
 static void keyRegenTask(void* /*params*/) {
   g_networkEpoch++;
-  logAsync("[WEB] Epoch bumped to %d — regenerating key after invalidating beacon\n", g_networkEpoch);
-  vTaskDelay(pdMS_TO_TICKS(SUPERFRAME_MS + 500));  // guarantee ≥1 beacon with new epoch
+  logAsync("[WEB] Epoch bumped to %d -- regenerating key after invalidating beacon\n", g_networkEpoch);
+  vTaskDelay(pdMS_TO_TICKS(SUPERFRAME_MS + 500));  // guarantee >=1 beacon with new epoch
   cryptoGenerateKey();
   s_keyRegenPending = false;
   vTaskDelete(nullptr);
@@ -938,7 +938,7 @@ static void handleGetLogout(AsyncWebServerRequest *req) {
   req->send(200, "application/json", "{\"ok\":true}");
 }
 
-/** GET /api/authstatus  (public — tells JS whether login is required) */
+/** GET /api/authstatus  (public -- tells JS whether login is required) */
 static void handleGetAuthStatus(AsyncWebServerRequest *req) {
   String body = "{\"hasPassword\":";
   body += s_dashPassword.isEmpty() ? "false}" : "true}";
@@ -973,7 +973,7 @@ static void handlePostDashSecure(AsyncWebServerRequest *req) {
 
 // -----------------------------------------------------------------------------
 // Gateway reboot
-// POST /api/reboot — responds immediately then restarts after 300 ms
+// POST /api/reboot -- responds immediately then restarts after 300 ms
 // -----------------------------------------------------------------------------
 static void rebootTask(void* /*params*/) {
   vTaskDelay(pdMS_TO_TICKS(300));  // let HTTP response flush
@@ -992,7 +992,7 @@ void webServerSetup()
   ws.onEvent(onWsEvent);
   server.addHandler(&ws);
 
-  // Auth routes (public — no webCheckAuth guard)
+  // Auth routes (public -- no webCheckAuth guard)
   server.on("/api/login",      HTTP_POST, handlePostLogin);
   server.on("/api/logout",     HTTP_GET,  handleGetLogout);
   server.on("/api/authstatus", HTTP_GET,  handleGetAuthStatus);
@@ -1004,7 +1004,7 @@ void webServerSetup()
   server.on("/api/status", HTTP_GET, handleGetStatus);
   server.on("/api/time", HTTP_POST, handlePostTime);
 
-  // Per-node routes — match on prefix, dispatch on action suffix
+  // Per-node routes -- match on prefix, dispatch on action suffix
   server.on("/api/node", HTTP_ANY, [](AsyncWebServerRequest *req) {
     // Auth checked inside each individual handler
     String path = req->url();
@@ -1017,7 +1017,7 @@ void webServerSetup()
     else req->send(404, "application/json", "{\"error\":\"not found\"}");
   });
 
-  // -- Feature flags — lets the dashboard adapt without separate builds -------
+  // -- Feature flags -- lets the dashboard adapt without separate builds -------
   server.on("/api/features", HTTP_GET, [](AsyncWebServerRequest* req) {
     if (!webCheckAuth(req)) { req->send(401, "application/json", "{\"error\":\"unauthorized\"}"); return; }
     req->send(200, "application/json",
@@ -1051,7 +1051,7 @@ void webServerSetup()
   // Static files from LittleFS (dashboard SPA + wifi_config.html)
   // Serve static files from LittleFS.
   // ESPAsyncWebServer probes for filename.gz before filename on every
-  // request. The "file not found" log lines for .gz are benign — the
+  // request. The "file not found" log lines for .gz are benign -- the
   // library falls back to the uncompressed file automatically.
   // To silence the log: add -D ASYNCWEBSERVER_REGEX=0 and
   // -D CONFIG_ASYNC_TCP_RUNNING_CORE=0 to platformio.ini build_flags,

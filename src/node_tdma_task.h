@@ -11,9 +11,9 @@ struct PzemData {
   float    voltage;       // V
   float    current;       // A
   float    power;         // W
-  uint32_t energy;        // Wh (raw from PZEM register × scale)
+  uint32_t energy;        // Wh (raw from PZEM register x scale)
   float    frequency;     // Hz
-  float    powerFactor;   // 0.00–1.00
+  float    powerFactor;   // 0.00-1.00
   uint16_t alarmThreshold; // watts, last value written to PZEM
   bool     valid;          // At least one successful read
   uint32_t readAt;         // millis() of last successful read

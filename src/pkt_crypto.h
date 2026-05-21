@@ -10,18 +10,18 @@
  *
  * Without PKT_ENCRYPTION (plain builds):
  *   pktEncrypt() and pktDecrypt() compile to empty inline no-ops.
- *   pktReceive<T>() is a plain memcpy cast — zero overhead.
+ *   pktReceive<T>() is a plain memcpy cast -- zero overhead.
  *
  * Nonce construction (16 bytes, never transmitted):
- *   [sfCount_lo | sfCount_hi | slotId | dir | 0x00×12]
+ *   [sfCount_lo | sfCount_hi | slotId | dir | 0x00 x 12]
  *
  * Direction constants (also used as nonce[3]):
- *   PKT_DIR_BEACON  0x04  — beacon: sfCount is plaintext in bytes 0-1; bytes 2-7 encrypted
+ *   PKT_DIR_BEACON  0x04  -- beacon: sfCount is plaintext in bytes 0-1; bytes 2-7 encrypted
  *                           with nonce (sfCount, slotId=0, PKT_DIR_BEACON); use pktReceiveBeacon()
- *   PKT_DIR_UL      0x01  — node → gateway telemetry
- *   PKT_DIR_DL      0x02  — gateway → node command (fixed dir avoids circular pktType dependency)
- *   PKT_DIR_JOIN_RQ 0xA0  — node → gateway join request
- *   PKT_DIR_JOIN_AK 0xA1  — gateway → node join ack
+ *   PKT_DIR_UL      0x01  -- node -> gateway telemetry
+ *   PKT_DIR_DL      0x02  -- gateway -> node command (fixed dir avoids circular pktType dependency)
+ *   PKT_DIR_JOIN_RQ 0xA0  -- node -> gateway join request
+ *   PKT_DIR_JOIN_AK 0xA1  -- gateway -> node join ack
  */
 #pragma once
 #include <Arduino.h>
@@ -52,12 +52,12 @@
 #endif
 
 /**
- * Receive helper — copies raw received bytes into a typed packet struct,
+ * Receive helper -- copies raw received bytes into a typed packet struct,
  * decrypting in-place when PKT_ENCRYPTION is defined.
  *
  * Returns false if rxLen < sizeof(T) (packet too short to be type T).
  * In encrypted builds the pktType field inside out is only trustworthy AFTER
- * this call — check it after calling, not before.
+ * this call -- check it after calling, not before.
  */
 template <typename T>
 inline bool pktReceive(const uint8_t* raw, size_t rxLen, T& out,
@@ -71,13 +71,13 @@ inline bool pktReceive(const uint8_t* raw, size_t rxLen, T& out,
 }
 
 /**
- * Beacon receive helper — handles the split plaintext/encrypted layout.
+ * Beacon receive helper -- handles the split plaintext/encrypted layout.
  *
  * BeaconPacket on wire: bytes 0-1 are sfCount in plaintext; bytes 2+ are
  * AES-128 CTR encrypted with nonce (sfCount, slotId=0, PKT_DIR_BEACON).
  * The node reads sfCount from the plaintext prefix to build the nonce before
- * decrypting — this breaks the chicken-and-egg problem while still rejecting
- * foreign-network beacons (wrong key → garbage pktType → caller discards).
+ * decrypting -- this breaks the chicken-and-egg problem while still rejecting
+ * foreign-network beacons (wrong key -> garbage pktType -> caller discards).
  *
  * In plain builds bytes 2+ are not encrypted; this is a plain memcpy cast.
  */

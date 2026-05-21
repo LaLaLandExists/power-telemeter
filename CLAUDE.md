@@ -363,7 +363,7 @@ a captive portal for Android, iOS/macOS, Windows, and Firefox OS detection flows
 - C++11, no STL, no exceptions — Arduino + ESP-IDF APIs only.
 - Error handling via return `bool` / early `return` guards, never `throw`.
 - No heap allocation after `setup()` — all state in statically allocated globals.
-- Use ASCII Characters
+- Use ASCII characters only — no Unicode in source code, comments, or string literals. Replacements: em dash `—` → `--`, en dash `–` → `-`, right arrow `→` → `->`, `×` → `x`, `µ` → `us`, `÷` → `/`, `²` → `2`, `≥` → `>=`, `≤` → `<=`, `≈` → `~=`, `±` → `+/-`, ellipsis `…` → `...`.
 - Use spaces for tab indents. Indent width is two spaces
 
 ### Naming

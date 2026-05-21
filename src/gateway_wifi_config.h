@@ -12,7 +12,7 @@
  *   connected, extends the range to any client on the same home network.
  *
  *   AP is disabled only while STA is actively connected. If STA drops for any
- *   reason, AP comes back on immediately — no manual intervention required.
+ *   reason, AP comes back on immediately -- no manual intervention required.
  *
  * -- State machine -------------------------------------------------------------
  *
@@ -20,7 +20,7 @@
  *
  *   AP_ACTIVE -> (saved creds exist) -> AP_STA_CONNECTING
  *       ^         or /api/connect             |
- *       |                           STA connects → stopAP()
+ *       |                           STA connects -> stopAP()
  *       |                                     |
  *       L--- STA drops / timeout -- STA_CONNECTED (AP off)
  *
@@ -36,19 +36,19 @@
  *
  *   GET  /api/info           -> {"version","apSsid","apIp","apActive","staConnected","staSSID","staIP"}
  *   GET  /api/scan           -> {"networks":[{"ssid","rssi","secure"},...]}
- *   POST /api/connect        -> body: ssid=...&password=...   → {"status":"connecting"}
+ *   POST /api/connect        -> body: ssid=...&password=...   -> {"status":"connecting"}
  *   GET  /api/wifistatus     -> {"apActive","connecting","connected","ip","ssid","rssi"}
  *                               polled every 800 ms by wifi_config.html after POST /api/connect
  *   GET  /api/disconnect     -> {"ok":true}  abort current attempt
  *   GET  /api/forget         -> {"ok":true}  clear NVS STA credentials, restore AP
  *   GET  /api/ap             -> {"ssid","hasPassword"}
- *   POST /api/ap             -> body: password=...  → {"ok":true}  (blank = open network)
+ *   POST /api/ap             -> body: password=...  -> {"ok":true}  (blank = open network)
  *
  *   /api/wifistatus != /api/status  (dashboard uses /api/status for gateway system info)
  *
  * -- Captive-portal convenience -------------------------------------------------
  *
- *   When AP is active, DNS redirects all queries → 192.168.4.1 so phones
+ *   When AP is active, DNS redirects all queries -> 192.168.4.1 so phones
  *   auto-open a browser. The catch-all handler (wifiHandleCatchAll) redirects
  *   to the dashboard and must be wired into gateway_web.cpp's onNotFound.
  *
@@ -60,11 +60,11 @@
  *
  * -- NVS layout ------------------------------------------------------------------
  *   namespace "wifi-cfg"
- *     "ssid"   (≤32 B)  — STA target network
- *     "pass"   (≤64 B)  — STA password, empty = open
- *     "appass" (≤63 B)  — AP password, empty = open (survives /api/forget)
- *     "sip" / "sgw" / "ssn" / "sdns" — static IP (optional)
- *     "tzoff"  (int32)  — UTC offset in seconds
+ *     "ssid"   (<=32 B)  -- STA target network
+ *     "pass"   (<=64 B)  -- STA password, empty = open
+ *     "appass" (<=63 B)  -- AP password, empty = open (survives /api/forget)
+ *     "sip" / "sgw" / "ssn" / "sdns" -- static IP (optional)
+ *     "tzoff"  (int32)  -- UTC offset in seconds
  *   Survives LittleFS format and firmware OTA.
  */
 
@@ -72,12 +72,12 @@
 #include <ESPAsyncWebServer.h>
 
 // -- Parameters -----------------------------------------------------------------
-#define CONFIG_PIN              34           // GPIO34 / BOOT — hold LOW at power-on
+#define CONFIG_PIN              34           // GPIO34 / BOOT -- hold LOW at power-on
 #define WIFI_CONNECT_TIMEOUT_MS 12000
 #define FW_VERSION_STR          "v1.0.0"  // human-readable string for /api/info
                                            // protocol version integer: FW_VERSION in tdma_protocol.h
 
-// NTP — override via build flag, e.g. -D NTP_UTC_OFFSET_SEC=28800 for UTC+8
+// NTP -- override via build flag, e.g. -D NTP_UTC_OFFSET_SEC=28800 for UTC+8
 #ifndef NTP_SERVER
 #  define NTP_SERVER         "pool.ntp.org"
 #endif
@@ -98,7 +98,7 @@ void wifiRegisterRoutes(AsyncWebServer &server);
 /** Drive the state machine. Call every loop() iteration. */
 void wifiConfigLoop();
 
-/** For gateway_web.cpp's onNotFound — redirects to /wifi_config.html when AP active. */
+/** For gateway_web.cpp's onNotFound -- redirects to /wifi_config.html when AP active. */
 void wifiHandleCatchAll(AsyncWebServerRequest *req);
 
 /** Erase stored STA credentials (ssid/pass/static-IP) from NVS. Safe to call before ESP.restart(). */
@@ -111,7 +111,7 @@ void wifiFactoryResetNvs();
 /** Returns the dynamically computed AP SSID ("PowerTelemeter_XXXX"). */
 const char* wifiGetApSsid();
 
-/** Status accessors — used by /api/status to include apActive field. */
+/** Status accessors -- used by /api/status to include apActive field. */
 bool wifiIsApActive();
 bool wifiIsStaConnected();
 

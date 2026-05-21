@@ -22,7 +22,7 @@ static inline float noise(float amp) {
 }
 
 void fakePzemTask(void* /*params*/) {
-  Serial.println("[PZEM-FAKE] Task started — net-test mode, no hardware required");
+  Serial.println("[PZEM-FAKE] Task started -- net-test mode, no hardware required");
 
   float    accumEnergyWhF = 0.0f;   // float carry so sub-Wh values accumulate
   uint32_t lastMs         = millis();

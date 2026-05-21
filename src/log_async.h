@@ -4,7 +4,7 @@
  * Non-blocking asynchronous serial logger for timing-critical tasks.
  *
  * logAsync() formats a message and enqueues it into a static ring buffer
- * under a short spinlock, then returns immediately — it never waits for
+ * under a short spinlock, then returns immediately -- it never waits for
  * UART TX to drain.  A low-priority Core 0 drain task flushes the buffer
  * to Serial.write().
  *
@@ -15,7 +15,7 @@
  *
  * Drop behaviour:
  *   If the ring buffer is full, the message is silently discarded.
- *   This is acceptable for a debug log — timing integrity takes priority.
+ *   This is acceptable for a debug log -- timing integrity takes priority.
  */
 #pragma once
 #include <Arduino.h>

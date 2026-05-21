@@ -9,7 +9,7 @@
  * Each slot pair (DL-first):
  *   [DL TX 50 ms] [UL RX 100 ms] [Guard 15 ms]
  *   Channel = hopChannel(sfCount, slotId)
- *   Phase guard (500 µs) applied between pairs where channel changes.
+ *   Phase guard (500 us) applied between pairs where channel changes.
  *
  * Timing discipline:
  *   All waits are anchored to sfStart (millis() at beacon TX).
@@ -50,7 +50,7 @@ bool              g_timeSet           = false;
 // Internal helpers
 // -----------------------------------------------------------------------------
 
-/** Change frequency and wait for PLL to re-lock (~500 µs). */
+/** Change frequency and wait for PLL to re-lock (~500 us). */
 static void setChannel(uint8_t ch) {
   radio.setFrequency(LORA_CHANNELS[ch]);
   delayMicroseconds(PHASE_GUARD_US);
@@ -177,7 +177,7 @@ static void processUplink(uint8_t slotIdx, const TelemetryPacket& pkt, int16_t r
       ns->pending      = false;
       ns->pendingRetry = 0;
     } else if (!ns->queuedCmd.active && ns->pendingRetry < MAX_DL_RETRIES) {
-      // DL not confirmed — re-arm the same command bytes for retransmission.
+      // DL not confirmed -- re-arm the same command bytes for retransmission.
       ns->queuedCmd.active = true;
       ns->pendingRetry++;
       logAsync("[GW-DL] Retry %d slot%d type=0x%02X\n",
@@ -234,7 +234,7 @@ static void sendBeacon() {
 }
 
 // -----------------------------------------------------------------------------
-// Downlink TX — called for every occupied slot; skips TX when no command is
+// Downlink TX -- called for every occupied slot; skips TX when no command is
 // queued.  The caller's waitUntilMs(slotBase + SLOT_DL_MS) preserves UL timing
 // regardless.  PendingCmd.data stores {pktType, nodeId, payload...} which now
 // matches the wire format directly (no UID injection needed).
@@ -261,7 +261,7 @@ static void sendDownlink(uint8_t slotIdx) {
 }
 
 // -----------------------------------------------------------------------------
-// Evict stale nodes — runs only when all slots are occupied (g_slotMask == 0xFF).
+// Evict stale nodes -- runs only when all slots are occupied (g_slotMask == 0xFF).
 // When free slots exist there is no eviction pressure; stale nodes keep their
 // slot so they can rejoin without re-contending if they come back.
 // When the network is full, any node that has exceeded NODE_TIMEOUT_SFS
@@ -269,7 +269,7 @@ static void sendDownlink(uint8_t slotIdx) {
 // Active nodes (UL every SF) always have missedSfs == 0.
 // -----------------------------------------------------------------------------
 static void evictStaleNodes() {
-  if (g_slotMask != 0xFF) return;  // free slots exist — nothing to reclaim
+  if (g_slotMask != 0xFF) return;  // free slots exist -- nothing to reclaim
 
   if (xSemaphoreTake(g_nodesMutex, pdMS_TO_TICKS(5)) != pdTRUE) return;
 
@@ -326,7 +326,7 @@ static void handleContentionWindow(uint32_t sfStart) {
     // Find existing slot for this UID, or allocate a new one
     uint8_t targetSlot = 0;
     if (xSemaphoreTake(g_nodesMutex, pdMS_TO_TICKS(5)) == pdTRUE) {
-      // Check if already registered (node reboot case — slot still active)
+      // Check if already registered (node reboot case -- slot still active)
       for (uint8_t i = 0; i < MAX_NODES; i++) {
         if (g_nodes[i].active && g_nodes[i].deviceUID == uid) {
           targetSlot            = g_nodes[i].slotId;
@@ -405,7 +405,7 @@ static void gatewayTdmaTask(void* /*params*/) {
         continue;
       }
 
-      // Frequency hop — same channel for both DL and UL of the pair.
+      // Frequency hop -- same channel for both DL and UL of the pair.
       uint8_t ch = hopChannel(g_sfCount, s + 1);
       setChannel(ch);
 

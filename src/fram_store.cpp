@@ -9,8 +9,8 @@
  * is evicted and its data is lost.
  *
  * On node join:
- *   framQueueRestore() → UID found → restore label, energy, history as hints
- *                     → UID not found → allocate FIFO slot, stamp UID+label
+ *   framQueueRestore() -> UID found -> restore label, energy, history as hints
+ *                     -> UID not found -> allocate FIFO slot, stamp UID+label
  *
  * Every reboot is a full re-contention; persistence is best-effort only.
  *
@@ -202,7 +202,7 @@ void framSaveLabel(uint8_t nodeIdx)
 }
 
 // ---------------------------------------------------------------------------
-// Deferred save/restore task — keeps I2C off the Core 1 TDMA task
+// Deferred save/restore task -- keeps I2C off the Core 1 TDMA task
 // ---------------------------------------------------------------------------
 
 #define FRAM_SAVE_ENERGY  0x10u
@@ -211,7 +211,7 @@ void framSaveLabel(uint8_t nodeIdx)
 
 static QueueHandle_t s_framQueue = nullptr;
 
-// Static snapshot buffer — framTask is sequential so one buffer suffices.
+// Static snapshot buffer -- framTask is sequential so one buffer suffices.
 // Not on the task stack: avoids a 1930-byte stack frame.
 static struct {
   uint16_t     deviceUID;
@@ -261,7 +261,7 @@ static void framTask(void* /*params*/)
       uint8_t framSlot = framFindSlot(nodeUID);
 
       if (framSlot == 0xFF) {
-        // Novel node — stamp a FIFO slot so subsequent saves land correctly
+        // Novel node -- stamp a FIFO slot so subsequent saves land correctly
         // without needing another UID search.
         framSlot = framAllocFifoSlot();
         uint16_t base = nodeBase(framSlot);
@@ -276,7 +276,7 @@ static void framTask(void* /*params*/)
         continue;
       }
 
-      // Known node — read snapshot without holding mutex (~47 ms at 400 kHz
+      // Known node -- read snapshot without holding mutex (~47 ms at 400 kHz
       // for the history block).
       uint16_t base = nodeBase(framSlot);
       s_fram.read(base + OFF_LABEL,
@@ -373,7 +373,7 @@ void framErase()
 {
   if (!s_framOk) return;
   s_fram.write32(FRAM_HEADER_BASE, 0x00000000UL);
-  logAsync("[FRAM] Magic erased — chip will reinitialise as blank on next boot\n");
+  logAsync("[FRAM] Magic erased -- chip will reinitialise as blank on next boot\n");
 }
 
 #endif // NODE_GATEWAY

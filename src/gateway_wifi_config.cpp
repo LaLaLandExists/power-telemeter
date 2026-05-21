@@ -5,11 +5,11 @@
  *
  * State machine:
  *
- *   AP_ACTIVE ──(creds exist at boot / POST /api/connect)──► AP_STA_CONNECTING
- *       ▲                                                           │
- *       │ STA drops / timeout / forget / disconnect                 │ WL_CONNECTED
- *       │                                                           ▼
- *       └──────────────────────────────────────── STA_CONNECTED (AP off)
+ *   AP_ACTIVE --(creds exist at boot / POST /api/connect)--> AP_STA_CONNECTING
+ *       ^                                                           |
+ *       | STA drops / timeout / forget / disconnect                 | WL_CONNECTED
+ *       |                                                           v
+ *       +---------------------------------------- STA_CONNECTED (AP off)
  *
  * AP is always on except while STA is actively connected.
  * DNS catch-all redirects all queries to 192.168.4.1 while AP is active.
@@ -150,7 +150,7 @@ void wifiFactoryResetNvs()
   p.end();
 }
 
-// Static IP NVS — keys sip/sgw/ssn/sdns; all empty = DHCP
+// Static IP NVS -- keys sip/sgw/ssn/sdns; all empty = DHCP
 static void nvsLoadStaticIp(String &ip, String &gw, String &sn, String &dns1)
 {
   Preferences p;
@@ -206,7 +206,7 @@ static void startAP()
   s_apActive = true;
   s_dns.setErrorReplyCode(DNSReplyCode::NoError);
   s_dns.start(DNS_PORT, "*", AP_IP);
-  logAsync("[WIFI] AP %s · SSID: %s · IP: %s\n",
+  logAsync("[WIFI] AP %s | SSID: %s | IP: %s\n",
            ok ? "UP" : "FAIL", s_apSsid,
            WiFi.softAPIP().toString().c_str());
   configASSERT(ok);
@@ -220,7 +220,7 @@ static void stopAP()
   WiFi.softAPdisconnect(true);
   WiFi.enableAP(false);
   s_apActive = false;
-  logAsync("[WIFI] AP disabled — STA is up\n");
+  logAsync("[WIFI] AP disabled -- STA is up\n");
 }
 
 // -- STA helper -----------------------------------------------------
@@ -330,7 +330,7 @@ static void handleScan(AsyncWebServerRequest *req)
     return;
   }
 
-  // Retry up to 2 times when scan returns 0 networks — common in AP+STA mode
+  // Retry up to 2 times when scan returns 0 networks -- common in AP+STA mode
   // on the first attempt while the radio is busy serving AP clients.
   if (n == 0 && s_scanRetries < 2)
   {
@@ -379,7 +379,7 @@ static void handleConnect(AsyncWebServerRequest *req)
   nvsSave(ssid, pass);
 
   // Restore AP before dropping STA so the device stays reachable throughout
-  // the transition — even if the new credentials fail.
+  // the transition -- even if the new credentials fail.
   if (s_staConnected)
   {
     MDNS.end();
@@ -394,7 +394,7 @@ static void handleConnect(AsyncWebServerRequest *req)
   req->send(200, "application/json", "{\"status\":\"connecting\"}");
 }
 
-/** GET /api/wifistatus — polled by dashboard after POST /api/connect.
+/** GET /api/wifistatus -- polled by dashboard after POST /api/connect.
  *  Distinct from GET /api/status (dashboard gateway-info endpoint). */
 static void handleWifiStatus(AsyncWebServerRequest *req)
 {
@@ -421,10 +421,10 @@ static void handleDisconnect(AsyncWebServerRequest *req)
 
   if (s_state == WIFI_STATE_STA_CONNECTED)
   {
-    // AP was off — restore it so the client isn't left stranded.
+    // AP was off -- restore it so the client isn't left stranded.
     MDNS.end();
     startAP();
-    logAsync("[WIFI] STA disconnected by user — AP restored\n");
+    logAsync("[WIFI] STA disconnected by user -- AP restored\n");
   }
   else
   {
@@ -445,10 +445,10 @@ static void handleForget(AsyncWebServerRequest *req)
   startAP(); // no-op if AP is already active
   s_state = WIFI_STATE_AP_ACTIVE;
   req->send(200, "application/json", "{\"ok\":true}");
-  logAsync("[WIFI] Credentials cleared — AP restored\n");
+  logAsync("[WIFI] Credentials cleared -- AP restored\n");
 }
 
-// GET /api/staticip — returns current static IP config
+// GET /api/staticip -- returns current static IP config
 static void handleGetStaticIp(AsyncWebServerRequest *req)
 {
   String ip, gw, sn, dns1;
@@ -464,7 +464,7 @@ static void handleGetStaticIp(AsyncWebServerRequest *req)
   req->send(200, "application/json", body);
 }
 
-// POST /api/staticip — body: ip=&gateway=&subnet=&dns=
+// POST /api/staticip -- body: ip=&gateway=&subnet=&dns=
 static void handleSetStaticIp(AsyncWebServerRequest *req)
 {
   String ip = "", gw = "", sn = "255.255.255.0", dns1 = "";
@@ -488,15 +488,15 @@ static void handleSetStaticIp(AsyncWebServerRequest *req)
   req->send(200, "application/json", "{\"ok\":true}");
 }
 
-// GET /api/staticip/clear — reset to DHCP
+// GET /api/staticip/clear -- reset to DHCP
 static void handleClearStaticIp(AsyncWebServerRequest *req)
 {
   nvsClearStaticIp();
-  logAsync("[WIFI] Static IP cleared — will use DHCP\n");
+  logAsync("[WIFI] Static IP cleared -- will use DHCP\n");
   req->send(200, "application/json", "{\"ok\":true}");
 }
 
-// GET /api/ap — returns SSID and whether a password is currently set
+// GET /api/ap -- returns SSID and whether a password is currently set
 static void handleGetAp(AsyncWebServerRequest *req)
 {
   JsonDocument doc;
@@ -507,7 +507,7 @@ static void handleGetAp(AsyncWebServerRequest *req)
   req->send(200, "application/json", body);
 }
 
-// POST /api/ap — body: password=<string> (blank = open network, min 8 chars if non-empty)
+// POST /api/ap -- body: password=<string> (blank = open network, min 8 chars if non-empty)
 static void handleSetAp(AsyncWebServerRequest *req)
 {
   String pass = "";
@@ -534,7 +534,7 @@ static void handleSetAp(AsyncWebServerRequest *req)
   req->send(200, "application/json", "{\"ok\":true}");
 }
 
-/** Catch-all — redirects OS captive-portal probes to the config page.
+/** Catch-all -- redirects OS captive-portal probes to the config page.
  *  Only redirects when AP is active; falls through to 404 otherwise. */
 static void handleCatchAll(AsyncWebServerRequest *req)
 {
@@ -558,7 +558,7 @@ void wifiConfigBegin()
   delay(50);
   bool forceAP = (digitalRead(CONFIG_PIN) == LOW);
   if (forceAP)
-    logAsync("[WIFI] GPIO%d LOW — skipping saved credentials\n", CONFIG_PIN);
+    logAsync("[WIFI] GPIO%d LOW -- skipping saved credentials\n", CONFIG_PIN);
 
   WiFi.mode(WIFI_AP_STA);
   startAP();
@@ -575,7 +575,7 @@ void wifiConfigBegin()
     }
     else
     {
-      logAsync("[WIFI] No saved credentials — staying in AP mode\n");
+      logAsync("[WIFI] No saved credentials -- staying in AP mode\n");
     }
   }
 }
@@ -635,7 +635,7 @@ void wifiConfigLoop()
       // and AP_ACTIVE case below will promote back to STA_CONNECTED.
       break;
     }
-    // NTP sync polling — check every 2s until first sync, then re-anchor hourly
+    // NTP sync polling -- check every 2s until first sync, then re-anchor hourly
     {
       uint32_t now_ms   = millis();
       uint32_t poll_iv  = s_ntpSynced ? NTP_RESYNC_MS : NTP_POLL_MS;
@@ -688,7 +688,7 @@ void wifiSetTzOffset(int32_t offsetSec)
     configTime(offsetSec, 0, NTP_SERVER);
     s_ntpSynced    = false;
     s_ntpLastCheck = millis();
-    logAsync("[WIFI] Timezone updated: UTC%+d — resyncing NTP\n",
+    logAsync("[WIFI] Timezone updated: UTC%+d -- resyncing NTP\n",
              (int)(offsetSec / 3600));
   }
   else
