@@ -34,3 +34,10 @@ void webBroadcastTelemetry(uint8_t slotIdx);
  */
 void webBroadcastAllNodes();
 
+/**
+ * Signal the WS broadcast task (Core 0) to push a bulk_complete or bulk_failed event.
+ * Non-blocking -- safe to call from the TDMA task on Core 1.
+ * Reads g_bulkSession state (set to COMPLETE or FAILED by the caller before calling).
+ */
+void webBroadcastBulkEvent();
+

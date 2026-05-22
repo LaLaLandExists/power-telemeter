@@ -33,6 +33,10 @@
 #define PKT_DIR_DL       0x02
 #define PKT_DIR_JOIN_RQ  0xA0
 #define PKT_DIR_JOIN_AK  0xA1
+// Bulk GFSK fragment direction discriminators (nonce byte 3).
+// 0x03 chosen for DL; 0x05 for UL to avoid collision with PKT_DIR_BEACON (0x04).
+#define PKT_DIR_BULK_DL  0x03   // GW -> Node GFSK fragment
+#define PKT_DIR_BULK_UL  0x05   // Node -> GW GFSK fragment
 
 #ifdef PKT_ENCRYPTION
   #include "crypto.h"

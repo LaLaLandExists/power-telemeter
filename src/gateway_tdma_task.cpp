@@ -45,6 +45,8 @@ uint8_t           g_gwMinute          = 0;
 uint8_t           g_gwSecond          = 0;
 uint32_t          g_gwTimeAt          = 0;
 bool              g_timeSet           = false;
+BulkSession       g_bulkSession       = {};
+static uint8_t    s_bulkBuf[BULK_MAX_PAYLOAD];
 
 // -----------------------------------------------------------------------------
 // Internal helpers
@@ -83,6 +85,201 @@ static int16_t rxWindow(uint8_t* buf, size_t maxLen, uint32_t windowMs) {
     vTaskDelay(pdMS_TO_TICKS(1));  // block so lower-priority tasks (loop/WiFi) can run
   }
   return -1;  // Timeout
+}
+
+// -- GFSK mode switch helpers -------------------------------------------------
+
+static bool switchToGfsk() {
+  radio.standby();
+  int16_t st = radio.beginFSK(GFSK_FREQUENCY, GFSK_BITRATE, GFSK_DEVIATION,
+                               GFSK_RX_BANDWIDTH, GFSK_TX_POWER, GFSK_PREAMBLE_LEN, false);
+  if (st != RADIOLIB_ERR_NONE) {
+    logAsync("[GW-BULK] GFSK init err %d\n", st);
+    return false;
+  }
+  radio.setSyncWord(const_cast<uint8_t*>(GFSK_SYNC_WORD), sizeof(GFSK_SYNC_WORD));
+  radio.setCRC(2);
+  return true;
+}
+
+static void switchToLora() {
+  radio.standby();
+  int16_t st = radio.begin(LORA_FREQUENCY, LORA_BANDWIDTH, LORA_SF, LORA_CR,
+                            LORA_SYNC_WORD, LORA_TX_POWER, LORA_PREAMBLE_LEN);
+  if (st != RADIOLIB_ERR_NONE) logAsync("[GW-BULK] LoRa restore err %d\n", st);
+  radio.setCRC(true);
+  radio.setFrequency(LORA_CHANNELS[0]);
+}
+
+// FSK receive window -- no digitalRead(DIO0) fallback: DIO0 fires PayloadReady
+// in FSK mode, so radio.available() is reliable.  The LoRa-specific GPIO
+// fallback in rxWindow() would give false positives in FSK mode.
+static int16_t rxWindowFsk(uint8_t* buf, size_t maxLen, uint32_t windowMs) {
+  uint32_t deadline = millis() + windowMs;
+  while ((int32_t)(deadline - millis()) > 0) {
+    if (radio.available()) {
+      int len = radio.getPacketLength();
+      if (len > 0 && (size_t)len <= maxLen) {
+        int16_t st = radio.readData(buf, (size_t)len);
+        if (st == RADIOLIB_ERR_NONE) return (int16_t)len;
+      }
+      return -1;
+    }
+    vTaskDelay(pdMS_TO_TICKS(1));
+  }
+  return -1;
+}
+
+// GFSK stop-and-wait sender (DL: gateway -> node).
+// Called from Zone 4 with radio already in GFSK mode.
+// g_bulkSession must be BULK_ACTIVE on entry.
+static void runBulkSend() {
+  BulkSession* bs = &g_bulkSession;
+  uint16_t offset = 0;
+  uint8_t  seqNum = 0;
+  uint16_t total  = bs->totalLen;
+
+  bs->fragsSent  = 0;
+  bs->fragsAcked = 0;
+
+  uint8_t  fragBuf[BULK_FRAG_TOTAL];
+  uint8_t  ackBuf[sizeof(BulkAckPacket)];
+  uint32_t deadline = millis() + BULK_MAX_WINDOW_MS;
+
+  while (offset < total) {
+    if ((int32_t)(deadline - millis()) <= 0) {
+      logAsync("[GW-BULK] TX window expired offset=%u\n", offset);
+      bs->state = BULK_FAILED;
+      return;
+    }
+
+    uint16_t chunkLen = total - offset;
+    if (chunkLen > BULK_FRAG_PAYLOAD) chunkLen = BULK_FRAG_PAYLOAD;
+    bool isLast = (offset + chunkLen >= total);
+
+    BulkFragHeader* hdr = reinterpret_cast<BulkFragHeader*>(fragBuf);
+    hdr->pktType    = PKT_BULK_FRAG;
+    hdr->seqNum     = seqNum;
+    hdr->payloadLen = (uint8_t)chunkLen;
+    hdr->flags      = isLast ? 0x01 : 0x00;
+    memcpy(fragBuf + BULK_FRAG_HEADER_LEN, bs->buf + offset, chunkLen);
+
+    // Encode seqNum into high byte of synthetic sfCount for per-fragment nonce uniqueness.
+    uint16_t synth_sf = (uint16_t)(((uint16_t)seqNum << 8) | (g_sfCount & 0xFF));
+    uint8_t  nodeId   = g_nodes[bs->slotIdx].slotId;
+    pktEncrypt(fragBuf + BULK_FRAG_HEADER_LEN, chunkLen, synth_sf, nodeId, PKT_DIR_BULK_DL);
+
+    bool acked = false;
+    for (uint8_t retry = 0; retry <= BULK_MAX_RETRIES && !acked; retry++) {
+      bs->fragsSent++;
+      int16_t st = radio.transmit(fragBuf, (size_t)(BULK_FRAG_HEADER_LEN + chunkLen));
+      if (st != RADIOLIB_ERR_NONE) {
+        logAsync("[GW-BULK] TX err %d seq=%d\n", st, seqNum);
+        continue;
+      }
+      radio.startReceive();
+      int16_t rxLen = rxWindowFsk(ackBuf, sizeof(ackBuf), BULK_ACK_TIMEOUT_MS);
+      if (rxLen == (int16_t)sizeof(BulkAckPacket)) {
+        const BulkAckPacket* ack = reinterpret_cast<const BulkAckPacket*>(ackBuf);
+        if (ack->seqNum == seqNum && ack->pktType == PKT_BULK_ACK) {
+          acked = true;
+          bs->fragsAcked++;
+        }
+      }
+    }
+
+    if (!acked) {
+      logAsync("[GW-BULK] no ACK after retries seq=%d\n", seqNum);
+      bs->state = BULK_FAILED;
+      return;
+    }
+
+    offset += chunkLen;
+    seqNum++;
+  }
+
+  bs->pdrTotal      = bs->fragsSent;
+  bs->pdrAcked      = bs->fragsAcked;
+  bs->crc32Received = bs->crc32Expected;  // DL: ACK protocol guarantees delivery
+  bs->state = BULK_COMPLETE;
+  logAsync("[GW-BULK] DL done: %u B, %u/%u frags\n",
+           total, bs->fragsAcked, bs->fragsSent);
+}
+
+// GFSK stop-and-wait receiver (UL: node -> gateway).
+// Called from Zone 4 with radio already in GFSK mode.
+// g_bulkSession must be BULK_ACTIVE on entry.
+static void runBulkReceive() {
+  BulkSession* bs = &g_bulkSession;
+  uint16_t bufOff = 0;
+  uint8_t  expSeq = 0;
+
+  bs->bufFilled  = 0;
+  bs->fragsAcked = 0;
+  bs->fragsSent  = 0;
+
+  uint8_t  fragBuf[BULK_FRAG_TOTAL];
+  uint8_t  ackBuf[sizeof(BulkAckPacket)];
+  uint32_t deadline = millis() + BULK_MAX_WINDOW_MS;
+
+  radio.startReceive();
+
+  while (true) {
+    if ((int32_t)(deadline - millis()) <= 0) {
+      logAsync("[GW-BULK] RX window expired seq=%d\n", expSeq);
+      bs->state = BULK_FAILED;
+      return;
+    }
+
+    int16_t rxLen = rxWindowFsk(fragBuf, sizeof(fragBuf), BULK_ACK_TIMEOUT_MS * 2);
+    if (rxLen < (int16_t)(BULK_FRAG_HEADER_LEN + 1)) {
+      // Timeout or truncated -- restart receive and retry within deadline.
+      radio.startReceive();
+      continue;
+    }
+
+    const BulkFragHeader* hdr = reinterpret_cast<const BulkFragHeader*>(fragBuf);
+    uint8_t* payload = fragBuf + BULK_FRAG_HEADER_LEN;
+
+    if (hdr->pktType != PKT_BULK_FRAG || hdr->seqNum != expSeq ||
+        hdr->payloadLen == 0 || hdr->payloadLen > BULK_FRAG_PAYLOAD) {
+      BulkAckPacket nack;
+      nack.seqNum  = expSeq;
+      nack.pktType = PKT_BULK_NACK;
+      memcpy(ackBuf, &nack, sizeof(nack));
+      radio.transmit(ackBuf, sizeof(ackBuf));
+      radio.startReceive();
+      continue;
+    }
+
+    uint16_t synth_sf = (uint16_t)(((uint16_t)hdr->seqNum << 8) | (g_sfCount & 0xFF));
+    uint8_t  nodeId   = g_nodes[bs->slotIdx].slotId;
+    pktDecrypt(payload, hdr->payloadLen, synth_sf, nodeId, PKT_DIR_BULK_UL);
+
+    if (bufOff + hdr->payloadLen <= BULK_MAX_PAYLOAD) {
+      memcpy(bs->buf + bufOff, payload, hdr->payloadLen);
+      bufOff += hdr->payloadLen;
+    }
+    bs->fragsAcked++;
+
+    BulkAckPacket ack;
+    ack.seqNum  = hdr->seqNum;
+    ack.pktType = PKT_BULK_ACK;
+    memcpy(ackBuf, &ack, sizeof(ack));
+    radio.transmit(ackBuf, sizeof(ackBuf));
+
+    if (hdr->flags & 0x01) break;  // LAST_FRAG
+    expSeq++;
+    radio.startReceive();
+  }
+
+  bs->pdrTotal      = bs->fragsSent;
+  bs->pdrAcked      = bs->fragsAcked;
+  bs->bufFilled     = bufOff;
+  bs->crc32Received = crc32_calc(bs->buf, bufOff);
+  bs->state         = BULK_COMPLETE;
+  logAsync("[GW-BULK] UL done: %u B, %u frags, CRC=0x%08X\n",
+           bufOff, bs->fragsAcked, bs->crc32Received);
 }
 
 // -----------------------------------------------------------------------------
@@ -190,6 +387,14 @@ static void processUplink(uint8_t slotIdx, const TelemetryPacket& pkt, int16_t r
     ns->pendingRetry = 0;
   }
 
+  // STATUS_BULK_READY (bit 7) -- node acknowledged the bulk grant
+  if ((pkt.statusByte & STATUS_BULK_READY) != 0) {
+    if (g_bulkSession.state == BULK_GRANT_SENT && g_bulkSession.slotIdx == slotIdx) {
+      g_bulkSession.acked = true;
+      g_bulkSession.state = BULK_ACTIVE;
+    }
+  }
+
   xSemaphoreGive(g_nodesMutex);
 
   // Push to WebSocket clients on Core 0 (non-blocking, safe from Core 1)
@@ -234,29 +439,46 @@ static void sendBeacon() {
 }
 
 // -----------------------------------------------------------------------------
-// Downlink TX -- called for every occupied slot; skips TX when no command is
-// queued.  The caller's waitUntilMs(slotBase + SLOT_DL_MS) preserves UL timing
-// regardless.  PendingCmd.data stores {pktType, nodeId, payload...} which now
-// matches the wire format directly (no UID injection needed).
+// Downlink TX -- called for every occupied slot; skips TX when nothing is
+// queued.  Priority 1: relay/threshold/nudge commands (queuedCmd).
+// Priority 2: bulk grant (bulkGrantPending), sent only when queuedCmd is idle.
+// The caller's waitUntilMs(slotBase + SLOT_DL_MS) preserves UL timing regardless.
 //
 // Must be called with g_nodesMutex held.
 // -----------------------------------------------------------------------------
 static void sendDownlink(uint8_t slotIdx) {
   NodeState* ns = &g_nodes[slotIdx];
-  if (!ns->queuedCmd.active || ns->queuedCmd.len < 2) return;
 
   uint8_t txBuf[MAX_DL_PAYLOAD_LEN];
   memset(txBuf, 0, MAX_DL_PAYLOAD_LEN);
-  memcpy(txBuf, ns->queuedCmd.data, ns->queuedCmd.len);
 
-  pktEncrypt(txBuf, MAX_DL_PAYLOAD_LEN, g_sfCount, (uint8_t)(slotIdx + 1), PKT_DIR_DL);
-  int16_t st = radio.transmit(txBuf, MAX_DL_PAYLOAD_LEN);
-  if (st == RADIOLIB_ERR_NONE) {
-    ns->pendingSentAt    = millis();
-    ns->queuedCmd.active = false;
-    logAsync("[GW-DL] Slot%d type=0x%02X\n", slotIdx + 1, txBuf[0]);
-  } else {
-    logAsync("[GW-DL] TX error %d slot%d\n", st, slotIdx + 1);
+  if (ns->queuedCmd.active && ns->queuedCmd.len >= 2) {
+    // Priority 1: relay / threshold / nudge command
+    memcpy(txBuf, ns->queuedCmd.data, ns->queuedCmd.len);
+    uint8_t pktType = ns->queuedCmd.data[0];
+    pktEncrypt(txBuf, MAX_DL_PAYLOAD_LEN, g_sfCount, (uint8_t)(slotIdx + 1), PKT_DIR_DL);
+    int16_t st = radio.transmit(txBuf, MAX_DL_PAYLOAD_LEN);
+    if (st == RADIOLIB_ERR_NONE) {
+      ns->pendingSentAt    = millis();
+      ns->queuedCmd.active = false;
+      logAsync("[GW-DL] Slot%d type=0x%02X\n", slotIdx + 1, pktType);
+    } else {
+      logAsync("[GW-DL] TX error %d slot%d\n", st, slotIdx + 1);
+    }
+  } else if (ns->bulkGrantPending) {
+    // Priority 2: bulk grant (6 bytes, zero-padded to MAX_DL_PAYLOAD_LEN)
+    memcpy(txBuf, ns->bulkGrantBuf, sizeof(BulkGrantPacket));
+    pktEncrypt(txBuf, MAX_DL_PAYLOAD_LEN, g_sfCount, (uint8_t)(slotIdx + 1), PKT_DIR_DL);
+    int16_t st = radio.transmit(txBuf, MAX_DL_PAYLOAD_LEN);
+    if (st == RADIOLIB_ERR_NONE) {
+      ns->bulkGrantPending    = false;
+      g_bulkSession.state     = BULK_GRANT_SENT;
+      g_bulkSession.grantSentAt = millis();
+      logAsync("[GW-DL] Slot%d BulkGrant dir=%d len=%u\n",
+               slotIdx + 1, g_bulkSession.dir, g_bulkSession.totalLen);
+    } else {
+      logAsync("[GW-DL] BulkGrant TX err %d slot%d\n", st, slotIdx + 1);
+    }
   }
 }
 
@@ -456,8 +678,51 @@ static void gatewayTdmaTask(void* /*params*/) {
     handleContentionWindow(sfStart);
 
     // -- Zone 4: Idle window + end guard ---------------------------------
-    // Radio is silent; run maintenance before blocking on sfEnd.
+    uint32_t idleStart = millis();
     evictStaleNodes();
+
+    bool doBulk = (g_bulkSession.state == BULK_ACTIVE && g_bulkSession.acked);
+    if (doBulk) {
+      waitUntilMs(idleStart + BULK_MAINT_MS);
+      if (switchToGfsk()) {
+        vTaskDelay(pdMS_TO_TICKS(BULK_SWITCH_MS));
+        if (g_bulkSession.dir == 0) {
+          runBulkSend();
+          // Echo (typeTag 0xF0): node bounces DL data back as UL in the same
+          // GFSK window.  Restore crc32Expected so the CRC comparison is valid.
+          if (g_bulkSession.state == BULK_COMPLETE &&
+              g_bulkSession.typeTag == 0xF0) {
+            uint32_t savedCrc = g_bulkSession.crc32Expected;
+            radio.startReceive();
+            runBulkReceive();
+            g_bulkSession.crc32Expected = savedCrc;
+          }
+        } else {
+          runBulkReceive();
+        }
+        vTaskDelay(pdMS_TO_TICKS(BULK_RESTORE_MS));
+      } else {
+        g_bulkSession.state = BULK_FAILED;
+      }
+      switchToLora();
+      webBroadcastBulkEvent();
+    } else if (g_bulkSession.state == BULK_GRANT_SENT) {
+      // Grant retry: re-arm if node did not respond within 2 superframes
+      if ((millis() - g_bulkSession.grantSentAt) > (uint32_t)SUPERFRAME_MS * 2) {
+        if (g_bulkSession.grantRetries < BULK_GRANT_RETRIES) {
+          g_bulkSession.grantRetries++;
+          if (xSemaphoreTake(g_nodesMutex, pdMS_TO_TICKS(5)) == pdTRUE) {
+            g_nodes[g_bulkSession.slotIdx].bulkGrantPending = true;
+            g_bulkSession.state = BULK_GRANT_QUEUED;
+            xSemaphoreGive(g_nodesMutex);
+          }
+        } else {
+          g_bulkSession.state = BULK_FAILED;
+          webBroadcastBulkEvent();
+        }
+      }
+    }
+
     if (g_sfCount % 10 == 0) {
       logAsync("[GW-TDMA] idle ~%ld ms\n",
                (long)(sfStart + SUPERFRAME_MS - END_GUARD_MS) - (long)millis());
@@ -513,4 +778,69 @@ uint8_t tdmaFindSlotByNodeId(uint8_t nodeId) {
     if (g_nodes[i].active && g_nodes[i].slotId == nodeId) return i;
   }
   return 0xFF;
+}
+
+bool bulkEnqueue(uint8_t slotIdx, uint8_t dir, uint8_t typeTag,
+                 const uint8_t* payload, uint16_t len) {
+  if (slotIdx >= MAX_NODES) return false;
+  if (len == 0 || len > BULK_MAX_PAYLOAD) return false;
+  // Reject if a session is in progress (not idle / terminal)
+  BulkSessionState_t cur = g_bulkSession.state;
+  if (cur != BULK_IDLE && cur != BULK_COMPLETE && cur != BULK_FAILED) return false;
+
+  bool ok = false;
+  if (xSemaphoreTake(g_nodesMutex, pdMS_TO_TICKS(20)) == pdTRUE) {
+    NodeState* ns = &g_nodes[slotIdx];
+    if (ns->active) {
+      // Pre-format the grant packet into NodeState for sendDownlink()
+      BulkGrantPacket* grant = reinterpret_cast<BulkGrantPacket*>(ns->bulkGrantBuf);
+      grant->pktType     = PKT_BULK_GRANT;
+      grant->nodeId      = ns->slotId;
+      grant->bulkDir     = dir;
+      grant->bulkType    = typeTag;
+      grant->totalLen_lo = (uint8_t)(len & 0xFF);
+      grant->totalLen_hi = (uint8_t)(len >> 8);
+      ns->bulkGrantPending = true;
+
+      // Initialise session state
+      g_bulkSession.state        = BULK_GRANT_QUEUED;
+      g_bulkSession.slotIdx      = slotIdx;
+      g_bulkSession.dir          = dir;
+      g_bulkSession.typeTag      = typeTag;
+      g_bulkSession.totalLen     = len;
+      g_bulkSession.buf          = s_bulkBuf;
+      g_bulkSession.bufFilled    = 0;
+      g_bulkSession.acked        = false;
+      g_bulkSession.grantRetries = 0;
+      g_bulkSession.grantSentAt  = 0;
+      g_bulkSession.fragsSent    = 0;
+      g_bulkSession.fragsAcked   = 0;
+      g_bulkSession.crc32Received = 0;
+      g_bulkSession.testStartMs  = millis();
+      g_bulkSession.pdrTotal     = 0;
+      g_bulkSession.pdrAcked     = 0;
+
+      if (dir == 0 && payload != nullptr) {
+        memcpy(s_bulkBuf, payload, len);
+        g_bulkSession.crc32Expected = crc32_calc(s_bulkBuf, len);
+      } else {
+        g_bulkSession.crc32Expected = 0;
+      }
+
+      ok = true;
+    }
+    xSemaphoreGive(g_nodesMutex);
+  }
+  return ok;
+}
+
+void bulkAbort() {
+  // Write FAILED first so Core 1 sees it immediately on next iteration
+  g_bulkSession.state = BULK_FAILED;
+  if (xSemaphoreTake(g_nodesMutex, pdMS_TO_TICKS(20)) == pdTRUE) {
+    if (g_bulkSession.slotIdx < MAX_NODES) {
+      g_nodes[g_bulkSession.slotIdx].bulkGrantPending = false;
+    }
+    xSemaphoreGive(g_nodesMutex);
+  }
 }

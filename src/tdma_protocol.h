@@ -73,6 +73,35 @@ static const float LORA_CHANNELS[N_CHANNELS] = {
 #define IDLE_MS                 1520    // post-contention idle window; includes 360 ms recovered from slot guard reductions + 1160 ms intentional SF extension
 #define END_GUARD_MS            20     // RF-quiet buffer before next beacon TX
 
+// -- GFSK bulk transfer timing (ms) -----------------------------------------
+// All constants anchor to the Idle window that follows Zone 3 (CW).
+#define BULK_MAINT_MS           20      // Maintenance before mode switch
+#define BULK_SWITCH_MS           2      // LoRa -> GFSK mode switch budget
+#define BULK_RESTORE_MS          2      // GFSK -> LoRa restore budget
+#define BULK_MAX_WINDOW_MS      (IDLE_MS - BULK_MAINT_MS - BULK_SWITCH_MS \
+                                 - BULK_RESTORE_MS - END_GUARD_MS)  // 1476 ms
+#define BULK_FRAG_PAYLOAD       200     // Usable payload bytes per fragment
+#define BULK_FRAG_HEADER_LEN      4     // sizeof(BulkFragHeader)
+#define BULK_FRAG_TOTAL         (BULK_FRAG_HEADER_LEN + BULK_FRAG_PAYLOAD)  // 204 bytes
+#define BULK_FRAG_AIR_MS         17     // On-air time of a 204-byte GFSK frame at 100 kbps
+#define BULK_ACK_AIR_MS           1     // On-air time of a 2-byte ACK
+#define BULK_TURNAROUND_MS        2     // TX->RX or RX->TX turnaround
+#define BULK_FRAG_CYCLE_MS      (BULK_FRAG_AIR_MS + BULK_ACK_AIR_MS \
+                                 + BULK_TURNAROUND_MS * 2)          // 22 ms per fragment
+#define BULK_ACK_TIMEOUT_MS      50     // Wait for ACK/NACK before retry
+#define BULK_MAX_RETRIES          3     // Per-fragment retry limit
+#define BULK_GRANT_RETRIES        3     // Grant-level retry across superframes
+#define BULK_MAX_PAYLOAD       4096     // Maximum total payload size (bytes)
+
+// -- GFSK radio parameters (SX1278, 100 kbps, 433 MHz band) -----------------
+#define GFSK_FREQUENCY          433.05f   // MHz (same as LoRa Ch 0)
+#define GFSK_BITRATE            100.0f    // kbps
+#define GFSK_DEVIATION           50.0f    // kHz (modulation index 1.0)
+#define GFSK_RX_BANDWIDTH       125.0f    // kHz (>= Fdev + BR/2)
+#define GFSK_TX_POWER             10      // dBm
+#define GFSK_PREAMBLE_LEN          4      // bytes (bit-synchroniser lock at 100 kbps)
+static const uint8_t GFSK_SYNC_WORD[3] = {0xB5, 0x4A, 0x7E};
+
 // Total superframe duration -- adjust IDLE_MS to change the period; verify the
 // computed value matches the dashboard's SUPERFRAME_MS constant in app.js.
 #define SUPERFRAME_MS \
@@ -103,6 +132,14 @@ static const float LORA_CHANNELS[N_CHANNELS] = {
 #define PKT_RELAY_CLEAR         0x05    // GW   -> Node,  2 bytes (DlHeader only)
 #define PKT_THRESHOLD           0x06    // GW   -> Node,  4 bytes (DlHeader + thresh_lo/hi)
 #define PKT_NUDGE               0x07    // GW   -> Node,  2 bytes (DlHeader only)
+// -- Bulk transfer packet types (GFSK transport; Idle window only) -----------
+#define PKT_BULK_GRANT          0x08    // GW   -> Node,  6 bytes (in existing DL slot)
+#define PKT_BULK_FRAG           0xB0    // GFSK: BulkFragHeader(4B) + up to 200B payload
+#define PKT_BULK_ACK            0xB1    // 2 bytes; NOT encrypted
+#define PKT_BULK_NACK           0xB2    // 2 bytes; NOT encrypted
+#define PKT_BULK_ABORT          0xB3    // 2 bytes; NOT encrypted
+// Bit 7 of TelemetryPacket.statusByte (reserved range; does not touch bits 4:0)
+#define STATUS_BULK_READY       0x80
 #define PKT_JOIN_REQUEST        0xA0    // Node -> GW,    4 bytes
 #define PKT_JOIN_ACK            0xA1    // GW   -> Node,  4 bytes
 
@@ -222,6 +259,43 @@ static_assert(sizeof(ThresholdPacket) == 4, "ThresholdPacket must be 4 bytes");
 struct NudgePacket : DlHeader {};
 static_assert(sizeof(NudgePacket) == 2, "NudgePacket must be 2 bytes");
 
+/**
+ * BulkGrantPacket (6 bytes) -- delivered in target node's regular DL slot.
+ * Informs the node that the gateway will initiate a GFSK bulk transfer during
+ * the next Idle window.  The node responds with STATUS_BULK_READY set in its
+ * next TelemetryPacket.statusByte.
+ */
+struct BulkGrantPacket : DlHeader {  // pktType=0x08, nodeId = 2 bytes
+  uint8_t  bulkDir;       // 0=DL (GW->Node), 1=UL (Node->GW)
+  uint8_t  bulkType;      // application type tag (0xF0 = echo/loopback)
+  uint8_t  totalLen_lo;   // payload byte count, little-endian
+  uint8_t  totalLen_hi;
+};
+static_assert(sizeof(BulkGrantPacket) == 6, "BulkGrantPacket must fit MAX_DL_PAYLOAD_LEN=7");
+
+/**
+ * BulkFragHeader (4 bytes) -- GFSK data fragment header.
+ * Followed by up to BULK_FRAG_PAYLOAD bytes of payload data.
+ * Hardware CRC-16 is appended by the SX1278 FSK packet engine.
+ */
+struct BulkFragHeader {
+  uint8_t  pktType;       // PKT_BULK_FRAG (0xB0)
+  uint8_t  seqNum;        // 0-based fragment sequence number (wraps at 255)
+  uint8_t  payloadLen;    // actual payload bytes in this fragment (1-200)
+  uint8_t  flags;         // bit 0 = LAST_FRAG; bits 7:1 reserved
+};
+static_assert(sizeof(BulkFragHeader) == 4, "BulkFragHeader must be 4 bytes");
+
+/**
+ * BulkAckPacket (2 bytes) -- NOT encrypted.
+ * Used for PKT_BULK_ACK, PKT_BULK_NACK, and PKT_BULK_ABORT.
+ */
+struct BulkAckPacket {
+  uint8_t  seqNum;        // echo of fragment seqNum being acknowledged
+  uint8_t  pktType;       // PKT_BULK_ACK / PKT_BULK_NACK / PKT_BULK_ABORT
+};
+static_assert(sizeof(BulkAckPacket) == 2, "BulkAckPacket must be 2 bytes");
+
 /** JoinRequestPacket (4 bytes) -- contention uplink from new node */
 struct JoinRequestPacket {
   uint8_t  pktType;    // 0xA0
@@ -283,6 +357,18 @@ inline uint16_t crc16ccitt(const uint8_t* data, size_t len) {
       crc = (crc & 0x8000) ? (crc << 1) ^ 0x1021 : (crc << 1);
   }
   return crc;
+}
+
+// CRC-32 (IEEE 802.3, polynomial 0xEDB88320)
+// Used for end-to-end bulk payload integrity verification.
+inline uint32_t crc32_calc(const uint8_t* data, size_t len) {
+  uint32_t crc = 0xFFFFFFFF;
+  for (size_t i = 0; i < len; i++) {
+    crc ^= data[i];
+    for (int j = 0; j < 8; j++)
+      crc = (crc & 1) ? (crc >> 1) ^ 0xEDB88320u : (crc >> 1);
+  }
+  return ~crc;
 }
 
 /** Compute 2-byte device UID from eFuse MAC. Called once at boot. */

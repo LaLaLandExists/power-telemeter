@@ -231,6 +231,48 @@ static void doBroadcastLogLine(const char *line)
   ws.textAll(json);
 }
 
+// Push bulk_complete or bulk_failed event to all WS clients. Core 0 only.
+static void doBroadcastBulkEvent()
+{
+  if (ws.count() == 0) return;
+
+  const BulkSession* bs = &g_bulkSession;
+  bool ok = (bs->state == BULK_COMPLETE);
+
+  JsonDocument doc;
+  doc["type"]      = ok ? "bulk_complete" : "bulk_failed";
+  doc["node"]      = bs->slotIdx + 1;
+  doc["dir"]       = bs->dir;
+  doc["typeTag"]   = bs->typeTag;
+  doc["totalLen"]  = bs->totalLen;
+  doc["fragsSent"] = bs->fragsSent;
+  doc["fragsAcked"]= bs->fragsAcked;
+  doc["durationMs"]= (uint32_t)(millis() - bs->testStartMs);
+
+  if (bs->dir == 0) {
+    // DL: compare gateway-side CRC of what was sent vs echo received
+    doc["crc32ok"] = (bs->crc32Expected != 0 &&
+                      bs->crc32Expected == bs->crc32Received);
+  } else {
+    // UL: report received CRC as hex string
+    char crcHex[12];
+    snprintf(crcHex, sizeof(crcHex), "0x%08X", (unsigned)bs->crc32Received);
+    doc["crc32"] = crcHex;
+  }
+
+#ifdef TRANSPORT_TEST
+  doc["scenario"] = bs->testScenario;
+  doc["pdrTotal"] = bs->pdrTotal;
+  doc["pdrAcked"] = bs->pdrAcked;
+  if (bs->pdrTotal > 0)
+    doc["pdrPct"]  = (float)bs->pdrAcked / bs->pdrTotal * 100.0f;
+#endif
+
+  String json;
+  serializeJson(doc, json);
+  ws.textAll(json);
+}
+
 // Non-blocking queue-post called from the TDMA task (Core 1).
 void webBroadcastTelemetry(uint8_t slotIdx)
 {
@@ -239,13 +281,23 @@ void webBroadcastTelemetry(uint8_t slotIdx)
   xQueueSend(s_wsBroadcastQueue, &idx, 0);
 }
 
+// Signal the WS broadcast task to push a bulk_complete/failed event (Core 1 safe).
+void webBroadcastBulkEvent()
+{
+  if (!s_wsBroadcastQueue) return;
+  uint8_t sentinel = 0xFF;
+  xQueueSend(s_wsBroadcastQueue, &sentinel, 0);
+}
+
 static void wsBroadcastTask(void* /*params*/)
 {
   uint8_t idx;
   char logLine[LOG_LINE_MAX];
   while (true) {
-    if (xQueueReceive(s_wsBroadcastQueue, &idx, pdMS_TO_TICKS(100)) == pdTRUE)
-      doBroadcastTelemetry(idx);
+    if (xQueueReceive(s_wsBroadcastQueue, &idx, pdMS_TO_TICKS(100)) == pdTRUE) {
+      if (idx == 0xFF) doBroadcastBulkEvent();
+      else             doBroadcastTelemetry(idx);
+    }
     while (logLineDequeue(logLine, sizeof(logLine)))
       doBroadcastLogLine(logLine);
   }
@@ -540,6 +592,81 @@ static void handleWsMessage(AsyncWebSocketClient *client, const String &payload)
     wsSendToClient(client, resp);
     return;
   }
+
+#ifdef TRANSPORT_TEST
+  // -- transport_test ---------------------------------------------------------
+  // Enqueues a GFSK bulk transfer for Phase 4/5 transport validation.
+  // Payload scenarios: echo, boundary, pattern, pdr_measure, broadcast_500.
+  if (strcmp(cmd, "transport_test") == 0)
+  {
+    uint8_t     idx      = tdmaFindSlotByNodeId(nodeId);
+    const char* scenario = doc["scenario"] | "echo";
+    uint16_t    size     = (uint16_t)(doc["size"] | 0);
+
+    JsonDocument ack;
+    ack["type"] = "transport_test_ack";
+    ack["node"] = nodeId;
+    ack["scenario"] = scenario;
+
+    if (idx == 0xFF) {
+      ack["success"] = false;
+      ack["reason"]  = "node_not_found";
+      wsSendToClient(client, ack);
+      return;
+    }
+
+    // Build test payload based on scenario
+    static uint8_t s_testPayload[BULK_MAX_PAYLOAD];
+    uint16_t payloadLen = 0;
+    bool validScenario  = true;
+
+    if (strcmp(scenario, "echo") == 0) {
+      payloadLen = 16;
+      memset(s_testPayload, 0xAB, payloadLen);
+    } else if (strcmp(scenario, "boundary") == 0) {
+      if (size == 0 || size > BULK_MAX_PAYLOAD) {
+        ack["success"] = false;
+        ack["reason"]  = "overflow_rejected";
+        wsSendToClient(client, ack);
+        return;
+      }
+      payloadLen = size;
+      for (uint16_t i = 0; i < payloadLen; i++) s_testPayload[i] = (uint8_t)(i & 0xFF);
+    } else if (strcmp(scenario, "pattern") == 0) {
+      payloadLen = BULK_MAX_PAYLOAD;
+      for (uint16_t i = 0; i < payloadLen; i++) s_testPayload[i] = (uint8_t)(i & 0xFF);
+    } else if (strcmp(scenario, "pdr_measure") == 0) {
+      payloadLen = 2000;
+      memset(s_testPayload, 0xAA, payloadLen);
+    } else if (strcmp(scenario, "broadcast_500") == 0) {
+      payloadLen = 500;
+      for (uint16_t i = 0; i < payloadLen; i++) s_testPayload[i] = (uint8_t)(i & 0xFF);
+    } else {
+      validScenario = false;
+    }
+
+    if (!validScenario) {
+      ack["success"] = false;
+      ack["reason"]  = "unknown_scenario";
+      wsSendToClient(client, ack);
+      return;
+    }
+
+    bool ok = bulkEnqueue(idx, 0, 0xF0, s_testPayload, payloadLen);
+    if (ok) {
+      g_bulkSession.testScenario = (strcmp(scenario, "echo")         == 0) ? BULK_TEST_ECHO
+                                 : (strcmp(scenario, "boundary")      == 0) ? BULK_TEST_BOUNDARY
+                                 : (strcmp(scenario, "pattern")       == 0) ? BULK_TEST_PATTERN
+                                 : (strcmp(scenario, "pdr_measure")   == 0) ? BULK_TEST_PDR
+                                 : BULK_TEST_BROADCAST500;
+    }
+    ack["success"] = ok;
+    ack["size"]    = payloadLen;
+    if (!ok) ack["reason"] = "session_busy_or_inactive";
+    wsSendToClient(client, ack);
+    return;
+  }
+#endif // TRANSPORT_TEST
 }
 
 // -----------------------------------------------------------------------------
@@ -1023,6 +1150,12 @@ void webServerSetup()
     req->send(200, "application/json",
       "{\"encryption\":"
 #ifdef PKT_ENCRYPTION
+      "true"
+#else
+      "false"
+#endif
+      ",\"transport-test\":"
+#ifdef TRANSPORT_TEST
       "true"
 #else
       "false"

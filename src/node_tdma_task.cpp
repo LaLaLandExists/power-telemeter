@@ -72,6 +72,14 @@ static int8_t  g_beaconRSSI       = -128;
 static uint8_t s_joinEpoch        = 0xFF; // epoch captured at last successful JoinAck
 static uint8_t s_lastBeaconEpoch  = 0xFF; // epoch from most recently received beacon
 
+// -- Bulk transfer state (node side) ------------------------------------------
+static bool     s_bulkGrantReceived = false;
+static uint8_t  s_bulkDir           = 0;    // 0=DL (receive), 1=UL (send)
+static uint8_t  s_bulkTypeTag       = 0;
+static uint16_t s_bulkTotalLen      = 0;
+static bool     s_bulkReady         = false; // set STATUS_BULK_READY in next UL
+static uint8_t  s_nodeBulkBuf[BULK_MAX_PAYLOAD];
+
 // -----------------------------------------------------------------------------
 // Relay control
 // -----------------------------------------------------------------------------
@@ -312,6 +320,19 @@ static void handleDownlink(const uint8_t* buf, int16_t len) {
     triggerNudge();
     break;
 
+  case PKT_BULK_GRANT:     // 6 bytes: DlHeader + bulkDir + bulkType + totalLen lo/hi
+    if (len >= (int16_t)sizeof(BulkGrantPacket)) {
+      const BulkGrantPacket* g = reinterpret_cast<const BulkGrantPacket*>(buf);
+      s_bulkDir           = g->bulkDir;
+      s_bulkTypeTag       = g->bulkType;
+      s_bulkTotalLen      = (uint16_t)g->totalLen_lo | ((uint16_t)g->totalLen_hi << 8);
+      s_bulkGrantReceived = true;
+      s_bulkReady         = true;
+      logAsync("[NODE-DL] BulkGrant dir=%d type=0x%02X len=%u\n",
+               s_bulkDir, s_bulkTypeTag, s_bulkTotalLen);
+    }
+    return; // grant does not set s_dlAck (no relay command to confirm)
+
   default:
     logAsync("[NODE-DL] Unknown packet type 0x%02X\n", type);
     return; // unknown -- do not set dlAck
@@ -366,6 +387,7 @@ static void transmitTelemetry(uint16_t sfCount) {
   pkt.nodeId     = g_nodeSlotId;
   pkt.uid        = g_nodeUID;
   pkt.statusByte = encodeStatus(g_relayState, g_relayMode, g_schedState, alarmState);
+  if (s_bulkReady) pkt.statusByte |= STATUS_BULK_READY;
   pkt.schedSH    = g_schedSH;
   pkt.schedSM    = g_schedSM;
   pkt.schedEH    = g_schedEH;
@@ -413,6 +435,151 @@ static int16_t rxWindow(uint8_t* buf, size_t maxLen, uint32_t windowMs) {
     vTaskDelay(pdMS_TO_TICKS(1));
   }
   return -1;
+}
+
+// FSK receive window -- no digitalRead(DIO0_PIN) fallback; DIO0 fires
+// PayloadReady in FSK mode so radio.available() is reliable.
+static int16_t rxWindowFsk(uint8_t* buf, size_t maxLen, uint32_t windowMs) {
+  uint32_t deadline = millis() + windowMs;
+  while ((int32_t)(deadline - millis()) > 0) {
+    if (radio.available()) {
+      int len = radio.getPacketLength();
+      if (len > 0 && (size_t)len <= maxLen) {
+        int16_t st = radio.readData(buf, (size_t)len);
+        if (st == RADIOLIB_ERR_NONE) return (int16_t)len;
+      }
+      return -1;
+    }
+    vTaskDelay(pdMS_TO_TICKS(1));
+  }
+  return -1;
+}
+
+// Node GFSK stop-and-wait sender (UL: node -> gateway).
+// Reads from s_nodeBulkBuf using s_bulkTotalLen.
+// sfCount is used to construct per-fragment encryption nonces.
+static void nodeRunBulkSend(uint16_t sfCount) {
+  uint16_t offset = 0;
+  uint8_t  seqNum = 0;
+  uint16_t total  = s_bulkTotalLen;
+
+  uint8_t fragBuf[BULK_FRAG_TOTAL];
+  uint8_t ackBuf[sizeof(BulkAckPacket)];
+  uint32_t deadline = millis() + BULK_MAX_WINDOW_MS;
+
+  while (offset < total) {
+    if ((int32_t)(deadline - millis()) <= 0) {
+      logAsync("[NODE-BULK] TX window expired offset=%u\n", offset);
+      return;
+    }
+
+    uint16_t chunkLen = total - offset;
+    if (chunkLen > BULK_FRAG_PAYLOAD) chunkLen = BULK_FRAG_PAYLOAD;
+    bool isLast = (offset + chunkLen >= total);
+
+    BulkFragHeader* hdr = reinterpret_cast<BulkFragHeader*>(fragBuf);
+    hdr->pktType    = PKT_BULK_FRAG;
+    hdr->seqNum     = seqNum;
+    hdr->payloadLen = (uint8_t)chunkLen;
+    hdr->flags      = isLast ? 0x01 : 0x00;
+    memcpy(fragBuf + BULK_FRAG_HEADER_LEN, s_nodeBulkBuf + offset, chunkLen);
+
+    uint16_t synth_sf = (uint16_t)(((uint16_t)seqNum << 8) | (sfCount & 0xFF));
+    pktEncrypt(fragBuf + BULK_FRAG_HEADER_LEN, chunkLen, synth_sf, g_nodeSlotId, PKT_DIR_BULK_UL);
+
+    bool acked = false;
+    for (uint8_t retry = 0; retry <= BULK_MAX_RETRIES && !acked; retry++) {
+      int16_t st = radio.transmit(fragBuf, (size_t)(BULK_FRAG_HEADER_LEN + chunkLen));
+      if (st != RADIOLIB_ERR_NONE) {
+        logAsync("[NODE-BULK] TX err %d seq=%d\n", st, seqNum);
+        continue;
+      }
+      radio.startReceive();
+      int16_t rxLen = rxWindowFsk(ackBuf, sizeof(ackBuf), BULK_ACK_TIMEOUT_MS);
+      if (rxLen == (int16_t)sizeof(BulkAckPacket)) {
+        const BulkAckPacket* ack = reinterpret_cast<const BulkAckPacket*>(ackBuf);
+        if (ack->seqNum == seqNum && ack->pktType == PKT_BULK_ACK) {
+          acked = true;
+        }
+      }
+    }
+
+    if (!acked) {
+      logAsync("[NODE-BULK] no ACK seq=%d\n", seqNum);
+      return;
+    }
+
+    offset += chunkLen;
+    seqNum++;
+  }
+
+  logAsync("[NODE-BULK] UL done: %u B\n", total);
+}
+
+// Node GFSK stop-and-wait receiver (DL: gateway -> node).
+// Assembles into s_nodeBulkBuf.  For typeTag 0xF0, calls nodeRunBulkSend() to echo.
+static void nodeRunBulkReceive(uint16_t sfCount) {
+  uint16_t bufOff = 0;
+  uint8_t  expSeq = 0;
+
+  uint8_t fragBuf[BULK_FRAG_TOTAL];
+  uint8_t ackBuf[sizeof(BulkAckPacket)];
+  uint32_t deadline = millis() + BULK_MAX_WINDOW_MS;
+
+  radio.startReceive();
+
+  while (true) {
+    if ((int32_t)(deadline - millis()) <= 0) {
+      logAsync("[NODE-BULK] RX window expired seq=%d\n", expSeq);
+      return;
+    }
+
+    int16_t rxLen = rxWindowFsk(fragBuf, sizeof(fragBuf), BULK_ACK_TIMEOUT_MS * 2);
+    if (rxLen < (int16_t)(BULK_FRAG_HEADER_LEN + 1)) {
+      radio.startReceive();
+      continue;
+    }
+
+    const BulkFragHeader* hdr = reinterpret_cast<const BulkFragHeader*>(fragBuf);
+    uint8_t* payload = fragBuf + BULK_FRAG_HEADER_LEN;
+
+    if (hdr->pktType != PKT_BULK_FRAG || hdr->seqNum != expSeq ||
+        hdr->payloadLen == 0 || hdr->payloadLen > BULK_FRAG_PAYLOAD) {
+      BulkAckPacket nack;
+      nack.seqNum  = expSeq;
+      nack.pktType = PKT_BULK_NACK;
+      memcpy(ackBuf, &nack, sizeof(nack));
+      radio.transmit(ackBuf, sizeof(ackBuf));
+      radio.startReceive();
+      continue;
+    }
+
+    uint16_t synth_sf = (uint16_t)(((uint16_t)hdr->seqNum << 8) | (sfCount & 0xFF));
+    pktDecrypt(payload, hdr->payloadLen, synth_sf, g_nodeSlotId, PKT_DIR_BULK_DL);
+
+    if (bufOff + hdr->payloadLen <= BULK_MAX_PAYLOAD) {
+      memcpy(s_nodeBulkBuf + bufOff, payload, hdr->payloadLen);
+      bufOff += hdr->payloadLen;
+    }
+
+    BulkAckPacket ack;
+    ack.seqNum  = hdr->seqNum;
+    ack.pktType = PKT_BULK_ACK;
+    memcpy(ackBuf, &ack, sizeof(ack));
+    radio.transmit(ackBuf, sizeof(ackBuf));
+
+    if (hdr->flags & 0x01) {
+      // LAST_FRAG: echo if typeTag 0xF0 (compiled in all builds)
+      if (s_bulkTypeTag == 0xF0 && bufOff > 0) {
+        s_bulkTotalLen = bufOff;
+        nodeRunBulkSend(sfCount);
+      }
+      logAsync("[NODE-BULK] DL done: %u B\n", bufOff);
+      return;
+    }
+    expSeq++;
+    radio.startReceive();
+  }
 }
 
 // -----------------------------------------------------------------------------
@@ -637,6 +804,41 @@ static void nodeTdmaTask(void* /*params*/) {
       transmitTelemetry(sfCount);
 
       waitUntilMs(txTime + SLOT_UL_MS + SLOT_GUARD_MS);
+
+      // -- Idle window: GFSK bulk exchange if a grant was received ----------
+      if (s_bulkGrantReceived && s_bulkReady) {
+        // Derive idle phase start from beacon receive time (mirrors gateway Zone 4).
+        uint32_t bulkStart = beaconReceiveTime
+                             + (BEACON_MS - BEACON_AIR_MS)
+                             + (uint32_t)MAX_NODES * SLOT_PAIR_MS
+                             + CONTENTION_UL_MS + CONTENTION_DL_MS
+                             + BULK_MAINT_MS + BULK_SWITCH_MS;
+        waitUntilMs(bulkStart);
+
+        radio.standby();
+        int16_t fst = radio.beginFSK(GFSK_FREQUENCY, GFSK_BITRATE, GFSK_DEVIATION,
+                                      GFSK_RX_BANDWIDTH, GFSK_TX_POWER,
+                                      GFSK_PREAMBLE_LEN, false);
+        if (fst == RADIOLIB_ERR_NONE) {
+          radio.setSyncWord(const_cast<uint8_t*>(GFSK_SYNC_WORD), sizeof(GFSK_SYNC_WORD));
+          radio.setCRC(2);
+          if (s_bulkDir == 0) nodeRunBulkReceive(sfCount);
+          else                nodeRunBulkSend(sfCount);
+        } else {
+          logAsync("[NODE-BULK] GFSK init err %d\n", fst);
+        }
+
+        // Restore LoRa
+        radio.standby();
+        int16_t lrst = radio.begin(LORA_FREQUENCY, LORA_BANDWIDTH, LORA_SF, LORA_CR,
+                                    LORA_SYNC_WORD, LORA_TX_POWER, LORA_PREAMBLE_LEN);
+        if (lrst != RADIOLIB_ERR_NONE) logAsync("[NODE-BULK] LoRa restore err %d\n", lrst);
+        radio.setCRC(true);
+        radio.setFrequency(LORA_CHANNELS[0]);
+
+        s_bulkGrantReceived = false;
+        s_bulkReady         = false;
+      }
 
       // Re-enter LISTEN to sync with next beacon
       state = ST_LISTEN;

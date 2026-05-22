@@ -20,6 +20,49 @@ struct HistoryPoint {
 };
 
 // -----------------------------------------------------------------------------
+// Bulk transfer session state (gateway side)
+// Driven exclusively by the TDMA task on Core 1; read by the web task on Core 0
+// only after state reaches BULK_COMPLETE or BULK_FAILED (terminal, no race).
+// -----------------------------------------------------------------------------
+typedef enum {
+  BULK_IDLE = 0,
+  BULK_GRANT_QUEUED,   // bulkEnqueue() called; grant loads into next DL slot
+  BULK_GRANT_SENT,     // grant transmitted; waiting for STATUS_BULK_READY in UL
+  BULK_ACTIVE,         // node ACK'd; next idle window will run GFSK transfer
+  BULK_COMPLETE,       // transfer completed successfully
+  BULK_FAILED          // transfer aborted or timed out
+} BulkSessionState_t;
+
+// Transport test scenario IDs (runtime, set by gateway_web.cpp)
+#define BULK_TEST_NONE          0x00
+#define BULK_TEST_ECHO          0x01
+#define BULK_TEST_BOUNDARY      0x02
+#define BULK_TEST_PATTERN       0x03
+#define BULK_TEST_PDR           0x04
+#define BULK_TEST_BROADCAST500  0x05
+
+struct BulkSession {
+  BulkSessionState_t state;
+  uint8_t   slotIdx;          // 0-based target slot index
+  uint8_t   dir;              // 0=DL (GW->Node), 1=UL (Node->GW)
+  uint8_t   typeTag;          // application type (0xF0 = echo/loopback)
+  uint16_t  totalLen;         // declared payload size in bytes
+  uint8_t*  buf;              // points to static s_bulkBuf in gateway_tdma_task.cpp
+  uint16_t  bufFilled;        // bytes assembled so far (UL direction)
+  bool      acked;            // node set STATUS_BULK_READY in UL
+  uint8_t   grantRetries;     // number of BulkGrantPacket retransmissions
+  uint32_t  grantSentAt;      // millis() when grant was last transmitted
+  uint16_t  fragsSent;        // total fragment TX attempts
+  uint16_t  fragsAcked;       // successfully ACKed fragments
+  uint32_t  crc32Expected;    // pre-computed from DL payload (DL direction)
+  uint32_t  crc32Received;    // computed from assembled UL payload (UL direction)
+  uint32_t  testStartMs;      // millis() when the session was enqueued
+  uint8_t   testScenario;     // BULK_TEST_* set by gateway_web.cpp
+  uint16_t  pdrTotal;         // fragments attempted (PDR test scenario)
+  uint16_t  pdrAcked;         // fragments successfully ACKed (PDR scenario)
+};
+
+// -----------------------------------------------------------------------------
 // Pending downlink command -- up to 8 bytes, queued per node
 // -----------------------------------------------------------------------------
 struct PendingCmd {
@@ -63,6 +106,11 @@ struct NodeState {
   uint8_t  pendingRetry;      // Number of retransmissions attempted so far
   PendingCmd queuedCmd;       // Command to send in next DL slot
 
+  // Bulk grant pending -- decoupled from queuedCmd so relay priority is natural.
+  // sendDownlink() checks queuedCmd.active FIRST; bulk grant only fires when idle.
+  bool    bulkGrantPending;
+  uint8_t bulkGrantBuf[sizeof(BulkGrantPacket)];  // pre-formatted 6-byte grant
+
   // History buffer
   HistoryPoint history[HISTORY_MAX_POINTS];
   int histHead;               // Write index
@@ -83,6 +131,7 @@ extern SemaphoreHandle_t g_nodesMutex;
 extern uint16_t          g_sfCount;
 extern uint8_t           g_slotMask;
 extern uint8_t           g_networkEpoch;  // incremented on every node eviction; sent in BeaconPacket.epoch
+extern BulkSession       g_bulkSession;   // driven by TDMA task (Core 1); read by web task (Core 0)
 
 // Gateway clock -- NTP-synced in STA mode; falls back to set_time WS / /api/time in AP mode
 extern uint8_t           g_gwHour;

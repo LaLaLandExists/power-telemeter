@@ -187,6 +187,7 @@ function onMsg(m){
     if(!cNid)renderGrid(NC);
     sT('idxCount',m.count||0);
     $('nodeCount').textContent=(m.count||0)+' node'+((m.count||0)!==1?'s':'');
+    if(gwFeatures['transport-test'])ttPopulateNodeSel();
   }
   else if(m.type==='telemetry'){
     const n=m.node;
@@ -211,6 +212,8 @@ function onMsg(m){
   else if(m.type==='relay_ack'||m.type==='schedule_ack'||m.type==='clear_ack'){if(!m.success){if(m.node!==undefined)delete pendingCmd[m.node];alert('Command failed');}}
   else if(m.type==='energy_cleared'){const i=NC.findIndex(x=>x.id===m.node);if(i>=0)NC[i].energy=0;if(cNid===m.node)updateDetail(NC.find(x=>x.id===cNid)||{});}
   else if(m.type==='all_energy_cleared'){NC.forEach(n=>n.energy=0);if(cNid){const c=NC.find(x=>x.id===cNid);if(c)updateDetail(c);}if(!cNid)renderGrid(NC);}
+  else if(m.type==='transport_test_ack'){onTransportTestAck(m);}
+  else if(m.type==='bulk_complete'||m.type==='bulk_failed'){onBulkComplete(m);}
   else if(m.type==='log')appendLog(m.line);
 }
 
@@ -1058,9 +1061,81 @@ async function fetchFeatures() {
     const d = await r.json();
     gwFeatures = d;
     const enc = !!d.encryption;
+    const tt  = !!d['transport-test'];
     const el = id => $(id);
-    if (el('provSection')) el('provSection').style.display = enc ? '' : 'none';
+    if (el('provSection'))          el('provSection').style.display          = enc ? '' : 'none';
+    if (el('transportTestSection')) el('transportTestSection').style.display = tt  ? '' : 'none';
+    if (tt) ttPopulateNodeSel();
   } catch(e) {}
+}
+
+/* -- Transport Test ---------------------------------------------- */
+function ttPopulateNodeSel() {
+  const sel = $('ttNodeSel'); if (!sel) return;
+  while (sel.options.length > 1) sel.remove(1);
+  NC.forEach(n => {
+    if (!n.online) return;
+    const opt = document.createElement('option');
+    opt.value = n.id;
+    opt.textContent = 'Node ' + n.id + ' -- ' + esc(n.label);
+    sel.appendChild(opt);
+  });
+}
+
+function doTransportTest() {
+  const btn = $('ttRunBtn'), st = $('ttStatus'), res = $('ttResult');
+  const nodeId = parseInt(($('ttNodeSel') && $('ttNodeSel').value) || '0');
+  const scen   = ($('ttScenSel') && $('ttScenSel').value) || 'echo';
+  if (!nodeId) {
+    if (st) { st.style.color = 'var(--wn)'; st.textContent = 'Select a node first'; }
+    return;
+  }
+  if (btn) btn.disabled = true;
+  if (st) { st.style.color = 'var(--txd)'; st.textContent = 'Sending grant...'; }
+  if (res) res.style.display = 'none';
+
+  let cmd_scen = scen, cmd_size;
+  if (scen.startsWith('boundary_')) { cmd_scen = 'boundary'; cmd_size = parseInt(scen.split('_')[1]); }
+
+  const payload = { cmd: 'transport_test', node: nodeId, scenario: cmd_scen };
+  if (cmd_size !== undefined) payload.size = cmd_size;
+  wsSend(payload);
+}
+
+function onTransportTestAck(m) {
+  const btn = $('ttRunBtn'), st = $('ttStatus');
+  if (!m.success) {
+    if (st) { st.style.color = 'var(--dg)'; st.textContent = 'Failed: ' + (m.reason || 'error'); }
+    if (btn) btn.disabled = false;
+    return;
+  }
+  if (st) { st.style.color = 'var(--ac)'; st.textContent = 'Grant sent (' + m.size + ' B, ' + m.scenario + ') -- waiting...'; }
+}
+
+function onBulkComplete(m) {
+  const btn = $('ttRunBtn'), st = $('ttStatus'), res = $('ttResult');
+  const ok = m.type === 'bulk_complete';
+  if (st) { st.style.color = ok ? 'var(--ac)' : 'var(--dg)'; st.textContent = ok ? 'Complete' : 'Failed'; }
+  if (btn) btn.disabled = false;
+  if (!res) return;
+  if (!ok) {
+    res.style.display = 'block';
+    res.style.borderColor = 'rgba(224,82,82,.35)';
+    res.innerHTML = '<span style="color:var(--dg)">FAILED</span>  ' + esc(m.reason || 'unknown');
+    return;
+  }
+  const pdr = m.pdrTotal > 0 ? 'PDR: ' + m.pdrAcked + '/' + m.pdrTotal + ' (' + (m.pdrPct || 0).toFixed(1) + '%)' : '';
+  const crcLine = m.dir === 0
+    ? 'CRC32: ' + (m.crc32ok ? '<span style="color:var(--ac)">PASS</span>' : '<span style="color:var(--dg)">FAIL</span>')
+    : 'CRC32: ' + esc(m.crc32 || '--');
+  res.style.display = 'block';
+  res.style.borderColor = 'rgba(0,229,160,.2)';
+  res.innerHTML = [
+    '<span style="color:var(--ac)">COMPLETE</span>',
+    'Node ' + m.node + '  &bull;  ' + m.totalLen + ' B  &bull;  ' + m.durationMs + ' ms',
+    'Frags: ' + m.fragsAcked + '/' + m.fragsSent + ' ACKed',
+    crcLine, pdr
+  ].filter(Boolean).join('<br>');
 }
 
 /* -- Provision --------------------------------------------------- */
