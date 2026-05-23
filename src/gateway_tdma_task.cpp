@@ -24,6 +24,8 @@
 #include "gateway_web.h"          // webBroadcastTelemetry()
 #include "fram_store.h"
 #include "log_async.h"
+#include "hal/hal_sys.h"
+#include "hal/hal_rtos.h"
 #include <RadioLib.h>
 
 // Dirty counters for deferred FRAM writes (n=10 policy)
@@ -737,17 +739,9 @@ static void gatewayTdmaTask(void* /*params*/) {
 void gatewayTdmaTaskStart() {
   g_nodesMutex   = xSemaphoreCreateMutex();
   configASSERT(g_nodesMutex);
-  g_networkEpoch = (uint8_t)(esp_random() & 0xFF);
+  g_networkEpoch = (uint8_t)(halRandom() & 0xFF);
 
-  xTaskCreatePinnedToCore(
-    gatewayTdmaTask,
-    "GW_TDMA",
-    8192,        // Stack in bytes (6k for tx/rx + JSON + Serial)
-    nullptr,
-    2,           // Priority 2 (higher than WiFi stack at 1)
-    nullptr,
-    1            // Core 1
-  );
+  halTaskCreatePinned(gatewayTdmaTask, "GW_TDMA", 8192, nullptr, 2, HAL_CORE_1, nullptr);
 }
 
 bool tdmaQueueCommand(uint8_t slotIdx, const uint8_t* data, uint8_t len) {

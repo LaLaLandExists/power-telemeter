@@ -1,5 +1,18 @@
 # Power Telemetry v2 — CLAUDE.md
 
+## Workflow Rules
+
+### Plan before code
+When the user asks for a plan, design, analysis, or approach, do NOT read code or make edits until the plan is agreed upon. Produce the plan first — (1) files to change, (2) design tradeoffs, (3) edge cases — then wait for explicit approval before implementing.
+
+### Narrow fix scope
+Fix exactly the bug or feature requested. Do not expand into adjacent refactors or related fixes without explicit approval. If related issues are spotted, list them at the end as suggestions, not edits.
+
+### Build verification
+After any firmware or filesystem edits, run `pio run -e <env>` to verify the build compiles and report the output. Do not ask for permission to run read-only build or check commands.
+
+---
+
 ## Project Overview
 
 ESP32-based LoRa telemetry system for remotely monitoring and controlling AC loads
@@ -109,7 +122,17 @@ power-telemeterv2/
 │   ├── log_async.h/.cpp        # Non-blocking ring-buffer serial logger + WebSocket relay
 │   ├── crypto.h/.cpp           # AES-128 CTR encryption, NVS key store (PKT_ENCRYPTION only)
 │   ├── rfid_provision.h/.cpp   # PN532 I2C MIFARE Classic key provisioning (PKT_ENCRYPTION only)
-│   └── node_fake_pzem.h/.cpp   # Simulated PZEM task for net-test builds (PZEM_FAKE only)
+│   ├── node_fake_pzem.h/.cpp   # Simulated PZEM task for net-test builds (PZEM_FAKE only)
+│   └── hal/                    # Platform HAL -- isolates ESP32-exclusive APIs
+│       ├── hal_sys.h           # halReboot, halRandom, halFillRandom, halFreeHeap, halGetMac
+│       ├── hal_rtos.h          # halTaskCreatePinned, HalCritSec_t spinlock
+│       ├── hal_nvs.h           # halNvsOpen/Close/GetStr/PutStr/GetBlob/PutBlob/GetInt/PutInt/...
+│       ├── hal_crypto.h        # halAesCtr (AES-128-CTR)
+│       └── esp32/              # ESP32 implementations (only files that include esp_*.h, mbedtls, Preferences)
+│           ├── hal_sys_esp32.cpp
+│           ├── hal_rtos_esp32.cpp
+│           ├── hal_nvs_esp32.cpp
+│           └── hal_crypto_esp32.cpp
 └── data/                       # LittleFS image root (gateway only); .gz variants built by gzip_data.py
     ├── index.html
     ├── app.js
@@ -294,7 +317,7 @@ On version mismatch, the new version is stamped and restore is skipped — stale
 | POST   | `/api/time`              | `hour=H&minute=M&second=S` (curl/debug; WS preferred)    |
 | GET    | `/api/status`            | Uptime, heap, WiFi (ntpSynced, mode, ssid, RSSI, IP), node count |
 | GET    | `/api/features`          | Active feature flags (`encryption`, etc.) for dashboard UI adaptation |
-| POST   | `/api/reboot`            | Trigger ESP.restart() (auth-gated)                         |
+| POST   | `/api/reboot`            | Trigger halReboot() (auth-gated)                           |
 
 **Dashboard authentication** (all public — no auth token required):
 
@@ -412,6 +435,31 @@ Always use `[PREFIX]` format so output is grep-able.
 | `[NODE-SCHED]` | Schedule evaluation       |
 | `[PZEM]`       | Power meter sampling      |
 
+### Platform HAL layer
+
+All ESP32-exclusive APIs are wrapped behind a thin HAL in `src/hal/`. When adding new
+code that needs any of the following, use the HAL function -- never call the raw ESP32
+API directly in application code:
+
+| ESP32 API | HAL replacement | Header |
+|---|---|---|
+| `ESP.restart()` | `halReboot()` | `hal/hal_sys.h` |
+| `esp_random()` | `halRandom()` | `hal/hal_sys.h` |
+| `esp_fill_random(buf, n)` | `halFillRandom(buf, n)` | `hal/hal_sys.h` |
+| `ESP.getFreeHeap()` | `halFreeHeap()` | `hal/hal_sys.h` |
+| `esp_efuse_mac_get_default(mac)` | `halGetMac(mac)` | `hal/hal_sys.h` |
+| `xTaskCreatePinnedToCore(...)` | `halTaskCreatePinned(fn, name, bytes, param, pri, HAL_CORE_0/1, out)` | `hal/hal_rtos.h` |
+| `portMUX_TYPE` + `portENTER/EXIT_CRITICAL(mux*)` | `HalCritSec_t` + `halCritSecInit/Enter/Exit` | `hal/hal_rtos.h` |
+| `Preferences` class | `halNvsOpen/Close/GetStr/PutStr/GetInt/PutInt/GetBlob/PutBlob/Remove/Clear` | `hal/hal_nvs.h` |
+| `mbedtls_aes_*` | `halAesCtr(buf, len, key16, nonce)` | `hal/hal_crypto.h` |
+
+**Standard FreeRTOS stays unchanged** -- `xSemaphore*`, `xQueue*`, `vTaskDelay`,
+`pdMS_TO_TICKS`, `ulTaskNotifyTake`, `xTaskNotifyGive`, `configASSERT`, etc. are
+upstream freertos.org spec and are used directly.
+
+To add a new platform: create `src/hal/<platform>/` with implementations of the four
+headers and set build flags to select the correct impl files.
+
 ### FreeRTOS patterns
 
 - **Mutex protect all `g_nodes[]` access** — both gateway TDMA task (Core 1) and web
@@ -423,7 +471,8 @@ Always use `[PREFIX]` format so output is grep-able.
   }
   ```
 - **Core pinning:** TDMA radio timing on Core 1 (priority 2); all other tasks on Core 0
-  (priority 1).
+  (priority 1). Use `halTaskCreatePinned()` with `HAL_CORE_0` or `HAL_CORE_1`; standard
+  `xTaskCreate()` (no pinning) stays as-is.
 - **Lightweight signaling:** use `xTaskNotifyGive()` / `ulTaskNotifyTake()` for simple
   one-shot signals (e.g., LED nudge); reserve queues for data.
 - Keep ISR-context code minimal; radio interrupts handled via RadioLib callbacks only.

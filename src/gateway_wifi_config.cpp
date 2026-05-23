@@ -23,7 +23,7 @@
 #include <WiFi.h>
 #include <ESPmDNS.h>
 #include <DNSServer.h>
-#include <Preferences.h>
+#include "hal/hal_nvs.h"
 #include <LittleFS.h>
 #include <ArduinoJson.h>
 
@@ -53,19 +53,16 @@ static uint32_t s_ntpLastCheck = 0;
 
 static int32_t nvsLoadTzOffset()
 {
-  Preferences p;
-  p.begin("wifi-cfg", true);
-  int32_t off = p.getInt("tzoff", NTP_UTC_OFFSET_SEC);
-  p.end();
+  HalNvs_t h = halNvsOpen("wifi-cfg", true);
+  int32_t off = h ? halNvsGetInt(h, "tzoff", NTP_UTC_OFFSET_SEC) : NTP_UTC_OFFSET_SEC;
+  if (h) halNvsClose(h);
   return off;
 }
 
 static void nvsSaveTzOffset(int32_t offsetSec)
 {
-  Preferences p;
-  p.begin("wifi-cfg", false);
-  p.putInt("tzoff", offsetSec);
-  p.end();
+  HalNvs_t h = halNvsOpen("wifi-cfg", false);
+  if (h) { halNvsPutInt(h, "tzoff", offsetSec); halNvsClose(h); }
 }
 
 static void startNtp()
@@ -90,51 +87,54 @@ static const uint8_t   DNS_PORT = 53;
 // -- NVS -------------------------------------------------------
 static void nvsLoad(String &ssid, String &pass)
 {
-  Preferences p;
-  p.begin("wifi-cfg", true);
-  ssid = p.getString("ssid", "");
-  pass = p.getString("pass", "");
-  p.end();
+  char s[64] = {}, p[64] = {};
+  HalNvs_t h = halNvsOpen("wifi-cfg", true);
+  if (h) {
+    halNvsGetStr(h, "ssid", s, sizeof(s));
+    halNvsGetStr(h, "pass", p, sizeof(p));
+    halNvsClose(h);
+  }
+  ssid = String(s);
+  pass = String(p);
 }
 
 static void nvsSave(const String &ssid, const String &pass)
 {
-  Preferences p;
-  p.begin("wifi-cfg", false);
-  p.putString("ssid", ssid);
-  p.putString("pass", pass);
-  p.end();
+  HalNvs_t h = halNvsOpen("wifi-cfg", false);
+  if (h) {
+    halNvsPutStr(h, "ssid", ssid.c_str());
+    halNvsPutStr(h, "pass", pass.c_str());
+    halNvsClose(h);
+  }
 }
 
 // Clears only STA credentials; intentionally preserves "appass" and "tzoff".
 static void nvsClear()
 {
-  Preferences p;
-  p.begin("wifi-cfg", false);
-  p.remove("ssid");
-  p.remove("pass");
-  p.remove("sip");
-  p.remove("sgw");
-  p.remove("ssn");
-  p.remove("sdns");
-  p.end();
+  HalNvs_t h = halNvsOpen("wifi-cfg", false);
+  if (h) {
+    halNvsRemove(h, "ssid");
+    halNvsRemove(h, "pass");
+    halNvsRemove(h, "sip");
+    halNvsRemove(h, "sgw");
+    halNvsRemove(h, "ssn");
+    halNvsRemove(h, "sdns");
+    halNvsClose(h);
+  }
 }
 
 static String nvsLoadApPassword()
 {
-  Preferences p;
-  p.begin("wifi-cfg", true);
-  String pw = p.getString("appass", "");
-  p.end();
-  return pw;
+  char buf[64] = {};
+  HalNvs_t h = halNvsOpen("wifi-cfg", true);
+  if (h) { halNvsGetStr(h, "appass", buf, sizeof(buf)); halNvsClose(h); }
+  return String(buf);
 }
 
 static void nvsSaveApPassword(const String &pw)
 {
-  Preferences p;
-  p.begin("wifi-cfg", false);
-  p.putString("appass", pw);
-  p.end();
+  HalNvs_t h = halNvsOpen("wifi-cfg", false);
+  if (h) { halNvsPutStr(h, "appass", pw.c_str()); halNvsClose(h); }
 }
 
 void wifiClearCredentials()
@@ -144,45 +144,51 @@ void wifiClearCredentials()
 
 void wifiFactoryResetNvs()
 {
-  Preferences p;
-  p.begin("wifi-cfg", false);
-  p.clear();
-  p.end();
+  HalNvs_t h = halNvsOpen("wifi-cfg", false);
+  if (h) { halNvsClear(h); halNvsClose(h); }
 }
 
 // Static IP NVS -- keys sip/sgw/ssn/sdns; all empty = DHCP
 static void nvsLoadStaticIp(String &ip, String &gw, String &sn, String &dns1)
 {
-  Preferences p;
-  p.begin("wifi-cfg", true);
-  ip   = p.getString("sip",  "");
-  gw   = p.getString("sgw",  "");
-  sn   = p.getString("ssn",  "");
-  dns1 = p.getString("sdns", "");
-  p.end();
+  char sip[40]={}, sgw[40]={}, ssn[40]={}, sdns[40]={};
+  HalNvs_t h = halNvsOpen("wifi-cfg", true);
+  if (h) {
+    halNvsGetStr(h, "sip",  sip,  sizeof(sip));
+    halNvsGetStr(h, "sgw",  sgw,  sizeof(sgw));
+    halNvsGetStr(h, "ssn",  ssn,  sizeof(ssn));
+    halNvsGetStr(h, "sdns", sdns, sizeof(sdns));
+    halNvsClose(h);
+  }
+  ip   = String(sip);
+  gw   = String(sgw);
+  sn   = String(ssn);
+  dns1 = String(sdns);
 }
 
 static void nvsSaveStaticIp(const String &ip, const String &gw,
                              const String &sn, const String &dns1)
 {
-  Preferences p;
-  p.begin("wifi-cfg", false);
-  p.putString("sip",  ip);
-  p.putString("sgw",  gw);
-  p.putString("ssn",  sn);
-  p.putString("sdns", dns1);
-  p.end();
+  HalNvs_t h = halNvsOpen("wifi-cfg", false);
+  if (h) {
+    halNvsPutStr(h, "sip",  ip.c_str());
+    halNvsPutStr(h, "sgw",  gw.c_str());
+    halNvsPutStr(h, "ssn",  sn.c_str());
+    halNvsPutStr(h, "sdns", dns1.c_str());
+    halNvsClose(h);
+  }
 }
 
 static void nvsClearStaticIp()
 {
-  Preferences p;
-  p.begin("wifi-cfg", false);
-  p.remove("sip");
-  p.remove("sgw");
-  p.remove("ssn");
-  p.remove("sdns");
-  p.end();
+  HalNvs_t h = halNvsOpen("wifi-cfg", false);
+  if (h) {
+    halNvsRemove(h, "sip");
+    halNvsRemove(h, "sgw");
+    halNvsRemove(h, "ssn");
+    halNvsRemove(h, "sdns");
+    halNvsClose(h);
+  }
 }
 
 // -- AP helpers ----------------------------------------------------------------

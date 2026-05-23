@@ -36,7 +36,9 @@
 #include <LittleFS.h>
 #include <ArduinoJson.h>
 #include <WiFi.h>
-#include <Preferences.h>
+#include "hal/hal_sys.h"
+#include "hal/hal_rtos.h"
+#include "hal/hal_nvs.h"
 #include <freertos/FreeRTOS.h>
 #include <freertos/task.h>
 #include <freertos/queue.h>
@@ -60,23 +62,26 @@ static QueueHandle_t s_wsBroadcastQueue = nullptr;
 // =================================================
 
 static String nvsDashPassLoad() {
-  Preferences p;
-  p.begin("wifi-cfg", true);
-  String pw = p.getString("dashpass", "");
-  p.end();
-  return pw;
+  char buf[64] = {};
+  HalNvs_t h = halNvsOpen("wifi-cfg", true);
+  if (h) {
+    halNvsGetStr(h, "dashpass", buf, sizeof(buf));
+    halNvsClose(h);
+  }
+  return String(buf);
 }
 
 static void nvsDashPassSave(const String &pw) {
-  Preferences p;
-  p.begin("wifi-cfg", false);
-  p.putString("dashpass", pw);
-  p.end();
+  HalNvs_t h = halNvsOpen("wifi-cfg", false);
+  if (h) {
+    halNvsPutStr(h, "dashpass", pw.c_str());
+    halNvsClose(h);
+  }
 }
 
 static void generateToken() {
   for (int i = 0; i < 4; i++) {
-    uint32_t r = esp_random();
+    uint32_t r = halRandom();
     snprintf(s_sessionToken + i * 8, 9, "%08lx", (unsigned long)r);
   }
 }
@@ -307,7 +312,7 @@ void webBroadcastTaskStart()
 {
   s_wsBroadcastQueue = xQueueCreate(16, sizeof(uint8_t));
   configASSERT(s_wsBroadcastQueue);
-  xTaskCreatePinnedToCore(wsBroadcastTask, "WS_BCAST", 4096, nullptr, 1, nullptr, 0);
+  halTaskCreatePinned(wsBroadcastTask, "WS_BCAST", 4096, nullptr, 1, HAL_CORE_0, nullptr);
 }
 
 static void wsSendToClient(AsyncWebSocketClient *client, const JsonDocument &doc)
@@ -927,7 +932,7 @@ static void handleGetStatus(AsyncWebServerRequest *req)
       nodeCount++;
 
   doc["uptime"] = millis() / 1000UL;
-  doc["freeHeap"] = ESP.getFreeHeap();
+  doc["freeHeap"] = halFreeHeap();
   doc["wifiRSSI"] = wifiIsStaConnected() ? WiFi.RSSI() : 0;
   doc["ip"] = wifiIsStaConnected() ? WiFi.localIP().toString() : "192.168.4.1";
   doc["loraFreq"] = LORA_CHANNELS[0];
@@ -1104,7 +1109,7 @@ static void handlePostDashSecure(AsyncWebServerRequest *req) {
 // -----------------------------------------------------------------------------
 static void rebootTask(void* /*params*/) {
   vTaskDelay(pdMS_TO_TICKS(300));  // let HTTP response flush
-  ESP.restart();
+  halReboot();
 }
 
 // -----------------------------------------------------------------------------

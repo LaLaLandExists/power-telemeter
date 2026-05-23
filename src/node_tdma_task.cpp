@@ -24,6 +24,8 @@
 
 #include "node_tdma_task.h"
 #include "log_async.h"
+#include "hal/hal_sys.h"
+#include "hal/hal_rtos.h"
 #include <RadioLib.h>
 #ifndef PZEM_FAKE
 #include <PZEM004Tv30.h>
@@ -711,7 +713,7 @@ static void nodeTdmaTask(void* /*params*/) {
 
       // Random backoff to reduce collision probability.
       // Max = CONTENTION_UL_MS - JoinRequest_air_time - margin = 60 - 16 - 5 = 39 ms.
-      vTaskDelay((esp_random() % 25) / portTICK_PERIOD_MS);
+      vTaskDelay((halRandom() % 25) / portTICK_PERIOD_MS);
 
       JoinRequestPacket req;
       req.pktType   = PKT_JOIN_REQUEST;
@@ -934,18 +936,17 @@ void nodeTdmaTaskStart() {
 
   // PZEM sampling - Core 0, priority 1 (below WiFi if present)
 #ifdef PZEM_FAKE
-  xTaskCreatePinnedToCore(fakePzemTask, "PZEM", 4096, nullptr, 1, nullptr, 0);
+  halTaskCreatePinned(fakePzemTask, "PZEM", 4096, nullptr, 1, HAL_CORE_0, nullptr);
 #else
-  xTaskCreatePinnedToCore(pzemTask,     "PZEM", 4096, nullptr, 1, nullptr, 0);
+  halTaskCreatePinned(pzemTask,     "PZEM", 4096, nullptr, 1, HAL_CORE_0, nullptr);
 #endif
 
   // Schedule evaluator - Core 0, very low priority
-  xTaskCreatePinnedToCore(schedTask, "SCHED", 2048, nullptr, 1, nullptr, 0);
+  halTaskCreatePinned(schedTask, "SCHED", 2048, nullptr, 1, HAL_CORE_0, nullptr);
 
   // LED state + nudge task - Core 0, priority 1; drives two-color state LED
-  xTaskCreatePinnedToCore(ledTask, "LED", 2048, nullptr, 1,
-                          &s_ledTaskHandle, 0);
+  halTaskCreatePinned(ledTask, "LED", 2048, nullptr, 1, HAL_CORE_0, &s_ledTaskHandle);
 
   // TDMA radio task - Core 1, priority 2
-  xTaskCreatePinnedToCore(nodeTdmaTask, "NODE_TDMA", 8192, nullptr, 2, nullptr, 1);
+  halTaskCreatePinned(nodeTdmaTask, "NODE_TDMA", 8192, nullptr, 2, HAL_CORE_1, nullptr);
 }

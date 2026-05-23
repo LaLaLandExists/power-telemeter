@@ -20,6 +20,7 @@
 
 #include "fram_store.h"
 #include "log_async.h"
+#include "hal/hal_rtos.h"
 #include <Wire.h>
 #include <FRAM.h>
 #include <freertos/FreeRTOS.h>
@@ -366,7 +367,7 @@ void framTaskStart()
 {
   s_framQueue = xQueueCreate(16, sizeof(uint8_t));
   configASSERT(s_framQueue);
-  xTaskCreatePinnedToCore(framTask, "FRAM", 2048, nullptr, 0, nullptr, 0);
+  halTaskCreatePinned(framTask, "FRAM", 2048, nullptr, 0, HAL_CORE_0, nullptr);
 }
 
 void framErase()

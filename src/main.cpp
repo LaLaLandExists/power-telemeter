@@ -76,6 +76,7 @@
 #include <RadioLib.h>
 #include "tdma_protocol.h"
 #include "log_async.h"
+#include "hal/hal_sys.h"
 
 // --- Role-specific includes ---------------------------------------------------
 #ifdef NODE_GATEWAY
@@ -211,7 +212,7 @@ static void btnTask(void*) {
         logAsync("[GW] Button press -- rebooting\n");
       }
       vTaskDelay(pdMS_TO_TICKS(400));  // let log drain
-      ESP.restart();
+      halReboot();
     }
     vTaskDelay(pdMS_TO_TICKS(20));
   }
@@ -352,7 +353,7 @@ static void btnTask(void*) {
         logAsync("[NODE] Button press -- rebooting\n");
       }
       vTaskDelay(pdMS_TO_TICKS(200));  // let log drain
-      ESP.restart();
+      halReboot();
     }
     vTaskDelay(pdMS_TO_TICKS(20));
   }
@@ -392,7 +393,7 @@ void setup() {
         // Key was already stored by rfidProvisionRead() via cryptoSetKey()
         Serial.println("[NODE] Key loaded from RFID card - rebooting...");
         delay(200);
-        ESP.restart();
+        halReboot();
       }
       // Red blink: OFF
       digitalWrite(LED_RED_PIN_, HIGH);

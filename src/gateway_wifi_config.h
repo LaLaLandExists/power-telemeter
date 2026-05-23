@@ -101,11 +101,11 @@ void wifiConfigLoop();
 /** For gateway_web.cpp's onNotFound -- redirects to /wifi_config.html when AP active. */
 void wifiHandleCatchAll(AsyncWebServerRequest *req);
 
-/** Erase stored STA credentials (ssid/pass/static-IP) from NVS. Safe to call before ESP.restart(). */
+/** Erase stored STA credentials (ssid/pass/static-IP) from NVS. Safe to call before halReboot(). */
 void wifiClearCredentials();
 
 /** Erase the entire wifi-cfg NVS namespace (STA creds, AP password, static IP,
- *  timezone offset, and dashboard password). Use for factory reset before ESP.restart(). */
+ *  timezone offset, and dashboard password). Use for factory reset before halReboot(). */
 void wifiFactoryResetNvs();
 
 /** Returns the dynamically computed AP SSID ("PowerTelemeter_XXXX"). */

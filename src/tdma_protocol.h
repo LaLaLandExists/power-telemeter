@@ -6,7 +6,7 @@
  */
 #pragma once
 #include <Arduino.h>
-#include <esp_efuse.h>    // esp_efuse_mac_get_default()
+#include "hal/hal_sys.h"  // halGetMac()
 #include "pkt_crypto.h"   // pktEncrypt / pktDecrypt / pktReceive (no-ops when !PKT_ENCRYPTION)
 
 // -----------------------------------------------------------------------------
@@ -158,7 +158,7 @@ static const uint8_t GFSK_SYNC_WORD[3] = {0xB5, 0x4A, 0x7E};
  *   bytes 2-7  <rest>   -- AES-128 CTR encrypted with nonce (sfCount, slotId=0, PKT_DIR_BEACON)
  * In plain builds the full packet is sent unencrypted (same struct layout).
  *
- * epoch: initialised to esp_random() on gateway boot; incremented by 1 on every
+ * epoch: initialised to halRandom() on gateway boot; incremented by 1 on every
  * node eviction (only possible when all 8 slots are full).  A node whose stored
  * s_joinEpoch differs from the beacon epoch knows its slot assignment may have
  * been invalidated and re-contends to obtain a fresh assignment.
@@ -371,10 +371,10 @@ inline uint32_t crc32_calc(const uint8_t* data, size_t len) {
   return ~crc;
 }
 
-/** Compute 2-byte device UID from eFuse MAC. Called once at boot. */
+/** Compute 2-byte device UID from factory MAC. Called once at boot. */
 inline uint16_t computeDeviceUID() {
   uint8_t mac[6] = {0};
-  esp_efuse_mac_get_default(mac);
+  halGetMac(mac);
   return crc16ccitt(mac, 6);
 }
 

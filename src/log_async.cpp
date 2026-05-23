@@ -6,6 +6,7 @@
  */
 
 #include "log_async.h"
+#include "hal/hal_rtos.h"
 #include <stdarg.h>
 #include <string.h>
 #include <freertos/FreeRTOS.h>
@@ -21,7 +22,7 @@
 static char           s_logBuf[LOG_BUF_SIZE];
 static volatile uint16_t s_logHead = 0;   // write index (producer)
 static volatile uint16_t s_logTail = 0;   // read  index (consumer)
-static portMUX_TYPE   s_logMux = portMUX_INITIALIZER_UNLOCKED;
+static HalCritSec_t   s_logMux = HAL_CRITSEC_INITIALIZER;
 
 // --- Log-line relay queue (WebSocket) ----------------------------------------
 typedef struct { char data[LOG_LINE_MAX]; } LogLine_t;
@@ -41,7 +42,7 @@ void logAsync(const char* fmt, ...) {
   if (n <= 0) return;
   if (n >= (int)sizeof(tmp)) n = (int)sizeof(tmp) - 1;  // truncated
 
-  portENTER_CRITICAL(&s_logMux);
+  halCritSecEnter(&s_logMux);
   uint16_t free_space = (uint16_t)(LOG_BUF_SIZE - ((s_logHead - s_logTail) & LOG_BUF_MASK) - 1u);
   if ((uint16_t)n <= free_space) {
     for (int i = 0; i < n; i++) {
@@ -50,7 +51,7 @@ void logAsync(const char* fmt, ...) {
     }
   }
   // else: buffer full -- drop silently
-  portEXIT_CRITICAL(&s_logMux);
+  halCritSecExit(&s_logMux);
 }
 
 // --- Consumer (drain task, Core 0, priority 0) ------------------------------
@@ -60,12 +61,12 @@ static void logDrainTask(void* /*params*/) {
   while (true) {
     uint16_t count = 0;
 
-    portENTER_CRITICAL(&s_logMux);
+    halCritSecEnter(&s_logMux);
     while (s_logHead != s_logTail && count < sizeof(buf)) {
       buf[count++] = (uint8_t)s_logBuf[s_logTail & LOG_BUF_MASK];
       s_logTail++;
     }
-    portEXIT_CRITICAL(&s_logMux);
+    halCritSecExit(&s_logMux);
 
     if (count > 0) {
       Serial.write(buf, count);
@@ -102,15 +103,8 @@ bool logLineDequeue(char *buf, size_t maxLen) {
 }
 
 void logDrainTaskStart() {
+  halCritSecInit(&s_logMux);
   s_logLineQueue = xQueueCreate(LOG_LINE_DEPTH, sizeof(LogLine_t));
   configASSERT(s_logLineQueue);
-  xTaskCreatePinnedToCore(
-    logDrainTask,
-    "LOG_DRAIN",
-    2048,
-    nullptr,
-    0,       // lowest priority
-    nullptr,
-    0        // Core 0 alongside web/wifi
-  );
+  halTaskCreatePinned(logDrainTask, "LOG_DRAIN", 2048, nullptr, 0, HAL_CORE_0, nullptr);
 }
