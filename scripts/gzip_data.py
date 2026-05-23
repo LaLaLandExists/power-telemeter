@@ -49,6 +49,10 @@ def _restore_all():
 # Restore originals after the LittleFS image is built (normal SCons exit).
 atexit.register(_restore_all)
 
+print("  [gzip_data] Files are being stashed/minified for the LittleFS build.")
+print("  [gzip_data] DO NOT interrupt (Ctrl+C) until the build completes --")
+print("  [gzip_data] originals are restored automatically on normal exit.")
+
 # --- Step 1: remove EXCLUDED files so the LittleFS builder never sees them --
 for fname in EXCLUDE:
     src = os.path.join(data_dir, fname)
