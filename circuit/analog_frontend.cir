@@ -1,0 +1,100 @@
+* Power Telemeter -- Analog Frontend
+* ADS131M02 24-bit dual-channel ADC + ZMPT101B (voltage) + HWCT-004 (current)
+* Reference: future/analog_frontend_design.md
+*
+* ANALOG_FRONTEND subcircuit ports
+*   avdd agnd        analog supply (3.3 V / GND)
+*   dvdd dgnd        digital supply (3.3 V / GND)
+*   cap              ADS131M02 CAP pin (internal LDO bypass node)
+*   sclk din dout    SPI bus (mode 1: CPOL=0 CPHA=1, up to 25 MHz)
+*   cs               SPI chip select, active-low
+*   drdy             data-ready interrupt, active-low open-drain
+*   clkin            8.192 MHz clock input
+*
+* vline, vneutral, and loadline are .global mains rails.
+* loadline is the live conductor after passing through the HWCT-004 primary.
+
+.global vline vneutral loadline
+
+* ------------------------------------------------------------
+* ZMPT101B -- 1:1 precision voltage transformer, 4 kV isolation
+* Lpri = Lsec = 10 H (1:1 turns ratio)
+* ------------------------------------------------------------
+.subckt ZMPT101B pri0 pri1 sec0 sec1
+  Lpri pri0 pri1 10
+  Lsec sec0 sec1 10
+  K1 Lpri Lsec 0.999
+.ends ZMPT101B
+
+* ------------------------------------------------------------
+* HWCT004 -- 1:1000 toroidal CT, 50 A:50 mA, 1 kV isolation
+* L ratio = 1000^2 = 1e6; Lpri = 10 nH, Lsec = 10 mH
+* ------------------------------------------------------------
+.subckt HWCT004 pri0 pri1 sec0 sec1
+  Lpri pri0 pri1 10n
+  Lsec sec0 sec1 10m
+  K1 Lpri Lsec 0.999
+.ends HWCT004
+
+* ------------------------------------------------------------
+* ADS131M02 -- 24-bit dual-channel simultaneous-sampling ADC
+* Blackbox structural model: input impedance + power decoupling.
+* CH0 = current (ain0p/ain0n), CH1 = voltage (ain1p/ain1n)
+* ------------------------------------------------------------
+.subckt ADS131M02 ain0p ain0n ain1p ain1n avdd agnd dvdd dgnd cap sclk din dout cs drdy clkin
+  * Differential input impedance ~300 kOhm per channel at G <= 4
+  Rin0  ain0p  ain0n  300k
+  Rin1  ain1p  ain1n  300k
+  * Power supply decoupling (1 uF per rail, per datasheet Section 9.2)
+  C_avdd  avdd  agnd  1u
+  C_dvdd  dvdd  dgnd  1u
+  * CAP pin: internal LDO bypass, 220 nF to DGND
+  C_cap   cap   dgnd  220n
+.ends ADS131M02
+
+* ============================================================
+* ANALOG_FRONTEND -- passive signal chain + ADS131M02
+* ============================================================
+.subckt ANALOG_FRONTEND avdd agnd dvdd dgnd cap sclk din dout cs drdy clkin
+
+  * --- Voltage channel: ZMPT101B ---
+  * 2 x 56 kOhm in series; each sees <= 121 V rms at +10% mains.
+  * Total RL = 112 kOhm -> Iop = 2 mA at 220 V nominal.
+  RLa  vline   net_rla   56k
+  RLb  net_rla vt_prip   56k
+
+  * ZMPT101B primary: hot via RLa/RLb; neutral via vneutral (global)
+  XVT  vt_prip vneutral  vt_secp vt_secn  ZMPT101B
+
+  * Split sampling resistor: 2 x 165 Ohm center-tapped to AGND.
+  * Balanced differential: vt_secp = +Vs/2, vt_secn = -Vs/2.
+  Rs1  vt_secp  agnd  165
+  Rs2  vt_secn  agnd  165
+
+  * Anti-aliasing filter, voltage channel.
+  * fc = 1/(2*pi*100*680n) = 2341 Hz
+  Rfilt_vp  vt_secp  ain1p  100
+  Rfilt_vn  vt_secn  ain1n  100
+  Cdiff_v   ain1p    ain1n  680n
+
+  * --- Current channel: HWCT-004 ---
+  * Primary is inline with the live conductor: vline -> CT -> loadline.
+  XCT  vline loadline  ct_secp ct_secn  HWCT004
+
+  * Split burden resistor: 2 x 5 Ohm center-tapped to AGND.
+  * Peak burden voltage at 50 A primary: 70.71 mA * 10 Ohm = 0.707 V (59% FSR).
+  Rb1  ct_secp  agnd  5
+  Rb2  ct_secn  agnd  5
+
+  * Anti-aliasing filter, current channel.
+  * Identical to voltage channel -- zero differential phase error.
+  Rfilt_ip  ct_secp  ain0p  100
+  Rfilt_in  ct_secn  ain0n  100
+  Cdiff_i   ain0p    ain0n  680n
+
+  * --- ADS131M02 ---
+  XADC  ain0p ain0n ain1p ain1n  avdd agnd dvdd dgnd cap  sclk din dout cs drdy clkin  ADS131M02
+
+.ends ANALOG_FRONTEND
+
+.end

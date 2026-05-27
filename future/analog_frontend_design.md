@@ -77,7 +77,7 @@
 
 ## 2. Current Channel Design
 
-### 2.1 Burden Resistor Selection
+### 2.1 Split Burden Resistor Selection
 
 The CT secondary current is proportional to the primary current through the turns ratio $n$. For a primary current $I_p$, the secondary current is:
 
@@ -99,7 +99,11 @@ Solving for the maximum burden resistance:
 
 $$R_{b,\text{max,ADC}} = \frac{V_{\text{ref}}}{I_{s,\text{pk}}} = \frac{1.2}{70.71 \times 10^{-3}} = 16.97 \text{ } \Omega$$
 
-We select $R_b = 10 \text{ } \Omega$ to provide generous headroom for motor startup inrush transients. At $R_b = 10 \text{ } \Omega$, the peak burden voltage at rated current is:
+We select $R_b = 10 \text{ } \Omega$ to provide generous headroom for motor startup inrush transients.
+
+Following the ADS131M02 datasheet recommendation (Section 9.2.2.1), the burden is implemented as a **split configuration**: two equal resistors of $R_b/2 = 5 \text{ } \Omega$ in series, with the center tap connected to AGND. This produces a balanced differential signal — the positive ADC input sees $+V_{b}/2$ and the negative input sees $-V_{b}/2$ relative to ground, both 180 degrees out of phase. The split configuration provides best THD performance because any even-order distortion in the ADC's input stage is cancelled by the balanced drive.
+
+At $R_b = 10 \text{ } \Omega$ total (2 $\times$ 5 $\Omega$), the peak burden voltage at rated current is:
 
 $$V_{b,\text{pk}} = I_{s,\text{pk}} \cdot R_b = 70.71 \times 10^{-3} \times 10 = 0.707 \text{ V}$$
 
@@ -159,7 +163,7 @@ This is negligible. A standard 1/4 W through-hole metal film resistor is more th
 
 $$\text{Required tempco} \leq \frac{0.001}{(70 - 25)} = 22.2 \text{ ppm/}^\circ\text{C}$$
 
-Select: **10 $\Omega$, 0.1% tolerance, 15 ppm/$^\circ$C metal film resistor** (e.g., Vishay MRS25 or Yageo MFR series).
+Select: **2 $\times$ 5 $\Omega$, 0.1% tolerance, 15 ppm/$^\circ$C metal film resistor** (e.g., Vishay MRS25 or Yageo MFR series). Matched pair from the same reel to minimise differential imbalance.
 
 ---
 
@@ -311,26 +315,25 @@ Negligible. This is a DC offset on an AC signal; it is automatically rejected by
 
 $$P_{R_s} = I_{\text{op}}^2 \cdot R_s = (2 \times 10^{-3})^2 \times 330 = 1.32 \text{ mW}$$
 
-Select: **330 $\Omega$, 0.1% tolerance, 15 ppm/$^\circ$C metal film resistor**.
+Select: **2 $\times$ 165 $\Omega$, 0.1% tolerance, 15 ppm/$^\circ$C metal film resistor**. The sampling resistor is split into two equal halves with the center tap connected to AGND, identical to the current channel's split burden configuration, for balanced differential drive and optimal THD.
 
 ### 3.8 Circuit Topology — Voltage Channel
 
 ```
-                MAINS SIDE (isolated by transformer)     │    LOW-VOLTAGE SIDE
-                                                         │
-AC Line (L) ── R_La ── R_Lb ──┐                         │
-                    (56k)(56k) │                         │
+               MAINS SIDE (isolated by transformer)     │    LOW-VOLTAGE SIDE
+                                                        │
+AC Line (L) ── R_La ── R_Lb ──┐                        │
+                   (56k)(56k)  │                        │
                                │  ┌──────────┐          │
-                               ├──┤ ZMPT101B ├──── R_s ─┼──┬── AIN1P (ADS131M02)
-                               │  │  (1:1)   │   (330Ω) │  │
-AC Neutral (N) ───────────────┘  └──────────┘──────────┼──┤
-                                                         │  │
-                                     4kV isolation       │ C_v (22nF)
-                                        barrier         │  │
-                                                         │ GND (low-voltage)
+                               ├──┤ ZMPT101B ├──────────┼── Rs/2 ──┬── Rfilt ──┬── AIN1P
+                               │  │  (1:1)   │          │  (165Ω)  │   (100Ω)  │
+AC Neutral (N) ───────────────┘  └──────────┘          │         AGND        Cdiff
+                                                        │          │   (680nF) │
+                                    4kV isolation       │  Rs/2 ──┘── Rfilt ──┴── AIN1N
+                                       barrier         │  (165Ω)      (100Ω)
 ```
 
-The ZMPT101B provides 4 kV galvanic isolation. The primary winding is connected to the AC mains through the current-limiting resistor $R_L$. The secondary winding is connected to the sampling resistor $R_s$ on the low-voltage side. There is no galvanic connection between the mains and the measurement circuit.
+The ZMPT101B provides 4 kV galvanic isolation. The primary winding is connected to the AC mains through the current-limiting resistor $R_L$. The secondary winding feeds a split sampling resistor ($2 \times 165 \text{ } \Omega$, center-tapped to AGND) for balanced differential drive. Matched filter resistors ($R_{\text{filt}} = 100 \text{ } \Omega$ on each line) and a differential capacitor ($C_{\text{diff}} = 680 \text{ nF}$) form the anti-aliasing filter. There is no galvanic connection between the mains and the measurement circuit.
 
 ---
 
@@ -338,7 +341,7 @@ The ZMPT101B provides 4 kV galvanic isolation. The primary winding is connected 
 
 ### 4.1 Nyquist Consideration
 
-At a sample rate of $f_s = 4$ kSPS (the recommended operating point, see Section 5), the Nyquist frequency is:
+At a sample rate of $f_s = 4$ kSPS (the recommended operating point, see Section 7), the Nyquist frequency is:
 
 $$f_{\text{Nyquist}} = \frac{f_s}{2} = 2 \text{ kHz}$$
 
@@ -350,17 +353,35 @@ $$f_{\text{sig,max}} = 15 \times f_{\text{mains}} = 15 \times 60 = 900 \text{ Hz
 
 We need the filter to pass this bandwidth with minimal attenuation while suppressing content above $f_s / 2 = 2$ kHz. A first-order RC low-pass filter is sufficient because the sinc3 digital filter provides additional rolloff.
 
-### 4.2 Filter Cutoff Frequency Selection
+### 4.2 Filter Topology — Differential RC Filter
 
-For a first-order RC filter, the $-3$ dB cutoff frequency is:
+Per the ADS131M02 datasheet (Section 9.2.2.1), the recommended anti-aliasing filter for differential inputs uses matched series resistors on each input line with a differential capacitor across the ADC pins. This topology is applied identically to both channels:
 
-$$f_c = \frac{1}{2\pi R_f C_f}$$
+```
+Burden/Sampling         Anti-Aliasing Filter              ADC
+Resistor (split)        (identical on both channels)
+────────────────        ────────────────────────          ─────
 
-We want:
-- Minimal attenuation at 900 Hz: less than 0.5 dB ($\leq 5.6$% amplitude error)
-- Significant attenuation at $f_s = 4$ kHz and above
+                        Rfilt               Cdiff
+Sensor+ ── R/2 ──┬──── (100Ω) ────┬──────────────────── AINxP
+                  │                │
+                 AGND            (680nF)                ADS131M02
+                  │                │
+Sensor- ── R/2 ──┘──── (100Ω) ────┴──────────────────── AINxN
+                        Rfilt
+```
 
-The attenuation of a first-order filter at frequency $f$ is:
+The split burden/sampling resistor (center-tapped to AGND) produces a balanced differential signal. The filter resistors $R_{\text{filt}}$ are separate components from the burden/sampling resistors — they serve exclusively as the R in the RC filter and as current limiters for ADC input protection. The differential capacitor $C_{\text{diff}}$ spans the two ADC input pins.
+
+This topology has three important properties. First, the burden/sampling resistor value is decoupled from the filter cutoff — each can be optimised independently. Second, because both channels use identical $R_{\text{filt}}$ and $C_{\text{diff}}$ values, the filter introduces zero differential phase error between the voltage and current channels. Third, the matched series resistors on each line reject common-mode noise that couples through transformer winding capacitance.
+
+### 4.3 Filter Cutoff Frequency Selection
+
+For this differential topology, the $-3$ dB cutoff frequency is:
+
+$$f_c = \frac{1}{2\pi R_{\text{filt}} C_{\text{diff}}}$$
+
+We want minimal attenuation at 900 Hz (less than 0.5 dB) and significant attenuation above 2 kHz. The attenuation of a first-order filter at frequency $f$ is:
 
 $$A(f) = \frac{1}{\sqrt{1 + (f / f_c)^2}}$$
 
@@ -368,75 +389,122 @@ At $f = 900$ Hz with $A \geq 0.944$ ($-0.5$ dB):
 
 $$0.944 = \frac{1}{\sqrt{1 + (900 / f_c)^2}}$$
 
-$$1 + (900 / f_c)^2 = \frac{1}{0.944^2} = 1.1225$$
-
-$$(900 / f_c)^2 = 0.1225$$
-
 $$f_c = \frac{900}{\sqrt{0.1225}} = \frac{900}{0.350} = 2571 \text{ Hz}$$
 
-Choose $f_c \approx 2.5$ kHz as a round design target.
+### 4.4 Component Values (Both Channels Identical)
 
-### 4.3 Current Channel Filter
+Selecting $R_{\text{filt}} = 100 \text{ } \Omega$:
 
-The filter is placed in series with the ADC input, between the burden resistor and the ADC pins:
+$$C_{\text{diff}} = \frac{1}{2\pi R_{\text{filt}} f_c} = \frac{1}{2\pi \times 100 \times 2571} = 619 \text{ nF}$$
 
-```
-CT Burden (R_b) ── R_f ──┬── AIN0P
-                          │
-                         C_f
-                          │
-                  GND ───┴── AIN0N
-```
-
-Selecting $R_f = 1$ k$\Omega$ (total added source impedance):
-
-$$C_f = \frac{1}{2\pi R_f f_c} = \frac{1}{2\pi \times 1000 \times 2500} = 63.7 \text{ nF}$$
-
-Choose the nearest standard value: **$C_f = 68$ nF** (ceramic C0G/NP0 for low distortion).
+Choose the nearest standard value: **$C_{\text{diff}} = 680$ nF** (ceramic C0G/NP0 for low distortion).
 
 Actual cutoff:
 
-$$f_{c,I} = \frac{1}{2\pi \times 1000 \times 68 \times 10^{-9}} = 2341 \text{ Hz}$$
+$$f_c = \frac{1}{2\pi \times 100 \times 680 \times 10^{-9}} = 2341 \text{ Hz}$$
 
 Attenuation at 900 Hz:
 
-$$A_I(900) = \frac{1}{\sqrt{1 + (900 / 2341)^2}} = \frac{1}{\sqrt{1.1478}} = 0.934 = -0.59 \text{ dB}$$
+$$A(900) = \frac{1}{\sqrt{1 + (900 / 2341)^2}} = \frac{1}{\sqrt{1.1478}} = 0.934 = -0.59 \text{ dB}$$
 
 This is a systematic 6.6% amplitude reduction at the 15th harmonic. Since we know the filter's exact transfer function, this can be corrected in firmware when computing harmonic magnitudes. At the fundamental (60 Hz):
 
-$$A_I(60) = \frac{1}{\sqrt{1 + (60 / 2341)^2}} = \frac{1}{\sqrt{1.000657}} = 0.99967 = -0.003 \text{ dB}$$
+$$A(60) = \frac{1}{\sqrt{1 + (60 / 2341)^2}} = \frac{1}{\sqrt{1.000657}} = 0.99967 = -0.003 \text{ dB}$$
 
 Negligible — 0.033% amplitude error at the fundamental frequency.
 
-### 4.4 Voltage Channel Filter
+### 4.5 Differential Phase Error Between Channels
 
-For the voltage channel, the anti-aliasing filter capacitor is placed across the sampling resistor $R_s$ on the secondary side of the ZMPT101B:
+Because both channels use identical filter components ($R_{\text{filt}} = 100 \text{ } \Omega$, $C_{\text{diff}} = 680 \text{ nF}$), the phase lag introduced by the filter is the same on both channels:
 
+$$\phi_{\text{filter}} = -\arctan\left(\frac{60}{2341}\right) = -1.47^\circ \quad \text{(both channels)}$$
+
+The differential filter phase error is therefore:
+
+$$\Delta\phi_{\text{filter}} = \phi_{V,\text{filter}} - \phi_{I,\text{filter}} = -1.47^\circ - (-1.47^\circ) = 0^\circ$$
+
+This eliminates the filter contribution to the phase error budget entirely — a direct consequence of using matched filter components on both channels.
+
+### 4.6 SPICE Netlist — Complete Current Channel
+
+```spice
+* ============================================================
+* Current Channel: HWCT-004 + Split Burden + Differential Filter
+* ============================================================
+
+.subckt HWCT004 pri_p pri_n sec_p sec_n
+  K1 Lpri Lsec 0.999
+  Lpri pri_p pri_n 1H
+  Lsec sec_p sec_n 1H
+.ends HWCT004
+
+.subckt ADS131M02_CH ainp ainn
+  Rin ainp ainn 300k
+.ends ADS131M02_CH
+
+* --- Primary conductor (load current) ---
+Iload load_p load_n SIN(0 70.71 60)
+Rload load_p load_n 1
+
+* --- Current transformer ---
+X_CT load_p load_n ct_p ct_n HWCT004
+
+* --- Split burden resistor (2 x 5 ohm, center-tapped to AGND) ---
+Rb_top ct_p  0 5
+Rb_bot ct_n  0 5
+
+* --- Anti-aliasing filter (differential) ---
+Rfilt_p ct_p  ain0p 100
+Rfilt_n ct_n  ain0n 100
+Cdiff   ain0p ain0n 680n
+
+* --- ADC differential input ---
+X_ADC ain0p ain0n ADS131M02_CH
+
+.end
 ```
-ZMPT101B secondary ── R_s (330Ω) ──┬── AIN1P
-                                     │
-                                    C_v
-                                     │
-                             GND ───┴── AIN1N
+
+### 4.7 SPICE Netlist — Complete Voltage Channel
+
+```spice
+* ============================================================
+* Voltage Channel: ZMPT101B + Split Sampling R + Differential Filter
+* ============================================================
+
+.subckt ZMPT101B pri_p pri_n sec_p sec_n
+  K1 Lpri Lsec 0.999
+  Lpri pri_p pri_n 10H
+  Lsec sec_p sec_n 10H
+.ends ZMPT101B
+
+.subckt ADS131M02_CH ainp ainn
+  Rin ainp ainn 300k
+.ends ADS131M02_CH
+
+* --- Mains source ---
+Vmains vline vneutral SIN(0 311.13 60)
+
+* --- Current-limiting resistors (2 x 56k in series) ---
+RLa vline    net_rl  56k
+RLb net_rl   vt_pri  56k
+
+* --- ZMPT101B voltage transformer ---
+X_VT vt_pri vneutral vt_sec_p vt_sec_n ZMPT101B
+
+* --- Split sampling resistor (2 x 165 ohm, center-tapped to AGND) ---
+Rs_top vt_sec_p 0 165
+Rs_bot vt_sec_n 0 165
+
+* --- Anti-aliasing filter (differential, identical to current channel) ---
+Rfilt_vp vt_sec_p ain1p 100
+Rfilt_vn vt_sec_n ain1n 100
+Cdiff_v  ain1p    ain1n 680n
+
+* --- ADC differential input ---
+X_ADC1 ain1p ain1n ADS131M02_CH
+
+.end
 ```
-
-The filter cutoff formed by $R_s$ and $C_v$:
-
-$$C_v = \frac{1}{2\pi R_s f_c} = \frac{1}{2\pi \times 330 \times 2500} = 193 \text{ nF}$$
-
-Choose the nearest standard value: **$C_v = 180$ nF** (C0G/NP0 or X7R ceramic).
-
-Actual cutoff:
-
-$$f_{c,V} = \frac{1}{2\pi \times 330 \times 180 \times 10^{-9}} = 2679 \text{ Hz}$$
-
-Attenuation at 900 Hz:
-
-$$A_V(900) = \frac{1}{\sqrt{1 + (900 / 2679)^2}} = \frac{1}{\sqrt{1.1129}} = 0.949 = -0.45 \text{ dB}$$
-
-At the fundamental (60 Hz):
-
-$$A_V(60) = \frac{1}{\sqrt{1 + (60 / 2679)^2}} = 0.99975 = -0.002 \text{ dB}$$
 
 ---
 
@@ -474,23 +542,15 @@ The variation across the operating range (0.2° to 0.5°) is much smaller than t
 
 ### 5.4 Anti-Aliasing Filter Differential Phase Error
 
-A first-order RC filter introduces a phase lag of:
+Both channels use identical differential RC filters ($R_{\text{filt}} = 100 \text{ } \Omega$, $C_{\text{diff}} = 680 \text{ nF}$, $f_c = 2341 \text{ Hz}$). The phase lag at 60 Hz is the same on both channels:
 
-$$\phi(f) = -\arctan\left(\frac{f}{f_c}\right)$$
+$$\phi_{\text{filter}} = -\arctan\left(\frac{60}{2341}\right) = -\arctan(0.0256) = -1.47^\circ \quad \text{(both channels)}$$
 
-At 60 Hz:
+Because the filters are matched, the differential phase error is:
 
-Voltage channel ($f_{c,V} = 2679$ Hz):
+$$\Delta\phi_{\text{filter}} = 0^\circ$$
 
-$$\phi_{V,\text{filter}} = -\arctan\left(\frac{60}{2679}\right) = -\arctan(0.0224) = -1.28^\circ$$
-
-Current channel ($f_{c,I} = 2341$ Hz):
-
-$$\phi_{I,\text{filter}} = -\arctan\left(\frac{60}{2341}\right) = -\arctan(0.0256) = -1.47^\circ$$
-
-Differential filter phase error:
-
-$$\Delta\phi_{\text{filter}} = \phi_{V,\text{filter}} - \phi_{I,\text{filter}} = -1.28^\circ - (-1.47^\circ) = +0.19^\circ$$
+This is a direct consequence of using identical filter components on both channels rather than relying on the burden/sampling resistor as part of the filter network (which would give different cutoffs due to different R values).
 
 ### 5.5 ADC Sampling Phase Error
 
@@ -506,13 +566,13 @@ This is the fundamental advantage of the ADS131M02 over multiplexed ADC architec
 |--------|----------------|-----------------|----------------------|------|
 | ZMPT101B transformer | $-0.33^\circ$ (lag) | — | $-0.33^\circ$ | Constant |
 | HWCT-004 CT | — | $-0.2^\circ$ (lag, above 10 A) | $+0.2^\circ$ | Nearly constant |
-| Anti-aliasing filter | $-1.28^\circ$ | $-1.47^\circ$ | $+0.19^\circ$ | Constant |
+| Anti-aliasing filter (matched) | $-1.47^\circ$ | $-1.47^\circ$ | $0^\circ$ | Matched (zero) |
 | ADC simultaneous sampling | $0^\circ$ | $0^\circ$ | $0^\circ$ | — |
-| **Total (uncalibrated, above 10 A)** | — | — | **$+0.06^\circ$** | **Nearly constant** |
+| **Total (uncalibrated, above 10 A)** | — | — | **$-0.13^\circ$** | **Nearly constant** |
 
 ### 5.7 Phase Error Correction Strategy
 
-The total uncalibrated phase error of $+0.06^\circ$ above 10 A is nearly constant and extremely small. Unlike the SCT-013-000 design (which would require a multi-point current-dependent correction LUT), the HWCT-004's low and stable phase error allows correction with a single value in the ADS131M02's hardware PHASE register.
+The total uncalibrated phase error of $-0.13^\circ$ above 10 A is nearly constant and extremely small. Unlike the SCT-013-000 design (which would require a multi-point current-dependent correction LUT), the HWCT-004's low and stable phase error allows correction with a single value in the ADS131M02's hardware PHASE register.
 
 The PHASE register applies a sub-sample time shift in increments of one modulator clock period:
 
@@ -522,9 +582,9 @@ The corresponding phase resolution at 60 Hz:
 
 $$\Delta\phi_{\text{step}} = 360^\circ \times f_{\text{mains}} \times \Delta t_{\text{step}} = 360 \times 60 \times 122.07 \times 10^{-9} = 0.00264^\circ$$
 
-To correct $+0.06^\circ$:
+To correct $-0.13^\circ$:
 
-$$\text{PHASE register value} = \text{round}\left(\frac{0.06}{0.00264}\right) = 23 \text{ (integer steps)}$$
+$$\text{PHASE register value} = \text{round}\left(\frac{0.13}{0.00264}\right) = 49 \text{ (integer steps)}$$
 
 This corrects the constant phase offset to within $\pm 0.0013^\circ$. One register write during firmware initialisation — no runtime correction needed.
 
@@ -544,7 +604,7 @@ The worst case ($-0.52$% at PF = 0.5 and low current) is at the boundary of the 
 
 ### 5.9 Phase Behaviour at Harmonics
 
-Both the ZMPT101B and SCT-013-000 have frequency-dependent phase characteristics. At higher harmonics, the phase shifts differ from the fundamental. However, for load characterisation, the primary features used are harmonic magnitudes (H3/H1, H5/H1, THD, crest factor), not harmonic phase angles. The magnitude response of both transformers is flat within $\pm 1$% from 50 Hz to 1 kHz (the SCT-013-000 is specified to 1 kHz; the ZMPT101B's small ferrite core provides even better high-frequency response).
+Both the ZMPT101B and HWCT-004 have frequency-dependent phase characteristics. At higher harmonics, the phase shifts differ from the fundamental. However, for load characterisation, the primary features used are harmonic magnitudes (H3/H1, H5/H1, THD, crest factor), not harmonic phase angles. The magnitude response of both transformers is flat within $\pm 1$% from 50 Hz to 1 kHz. The matched anti-aliasing filters ensure no additional differential magnitude or phase error is introduced at any harmonic frequency.
 
 The one harmonic-phase-sensitive quantity is the displacement power factor, which is measured at the fundamental (60 Hz) where our calibration is precise.
 
@@ -581,40 +641,39 @@ No digital isolator (ADuM1401) is needed on the SPI bus. The ADS131M02 connects 
     │                             ║           ║
     │  R_La ── R_Lb ──┐           ║           ║
     │  (56k)  (56k)   │           ║           ║
-    │                  │ ┌──────┐ ║           ║
-    │                  ├─┤ZMPT  ├─╫──── R_s ──╫──┬── AIN1P ──┐
-    │                  │ │101B  │ ║  (330Ω)   ║  │           │
-    └── AC Neutral ────┘ │(1:1) │ ║           ║  │  C_v      │
-                         └──────┘ ║  4kV      ║  │ (180nF)   │
-                                  ║ isolation ║  │           │
-                                  ║           ║  └── AIN1N   │
-                                  ║           ║              │
-    ┌─── Load wire ───────────┐   ║           ║              │
-    │  (passes through CT)    │   ║           ║              │
-    │                         │   ║           ║              │
-    │         ┌──────┐        │   ║           ║              │
-    │         │HWCT  │        │   ║           ║              │
-    │         │ -004 ├────────╫───╫── R_b ────╫──┬── AIN0P   │
-    │         │1:1000│        ║   ║  (10Ω)    ║  │           │
-    │         │      ├────────╫───╫── R_f ──┬─╫──┤           │
-    │         └──────┘        ║   ║  (1kΩ)  │ ║  │  C_f      │ ADS131M02
-    │                         ║   ║         │ ║  │ (68nF)    │ (3.3V, shared
-    │           1kV isolation ║   ║     GND─┘ ║  │           │  GND w/ ESP32)
-    │                         ║   ║           ║  └── AIN0N   │
-    │                         ║   ║           ║              │
-    │                         ║   ║           ║     SCLK ────┤── GPIO 18
-    │                         ║   ║           ║     DIN  ────┤── GPIO 23
-    │                         ║   ║           ║     DOUT ────┤── GPIO 19
-    │                         ║   ║           ║     CS   ────┤── GPIO 5
-    │                         ║   ║           ║     DRDY ────┤── GPIO 4
-    │                         ║   ║           ║              │
-    │                         ║   ║           ║     AVDD ────┤── 3.3V
-    │                         ║   ║           ║     DVDD ────┤── 3.3V
-    │                         ║   ║           ║     AGND ────┤── GND
-    │                         ║   ║           ║     DGND ────┤── GND
-    │                         ║   ║           ║              │
-    └─────────────────────────┘   ║           ║     CLKIN ───┤── 8.192 MHz
-                                  ║           ║              │
+    │                  │ ┌──────┐ ║           ║  Rs/2    Rfilt_vp       Cdiff_v
+    │                  ├─┤ZMPT  ├─╫───────────╫─(165Ω)─┬─(100Ω)──┬── AIN1P ──┐
+    │                  │ │101B  │ ║           ║        │         │           │
+    └── AC Neutral ────┘ │(1:1) │ ║  4kV      ║       AGND    (680nF)       │
+                         └──────┘ ║ isolation ║        │         │           │
+                                  ║           ╠─(165Ω)─┘─(100Ω)──┴── AIN1N   │
+                                  ║           ║  Rs/2    Rfilt_vn             │
+                                  ║           ║                               │
+    ┌─── Load wire ───────────┐   ║           ║                               │
+    │  (passes through CT)    │   ║           ║  Rb/2    Rfilt_ip   Cdiff_i   │
+    │                         │   ║           ║                               │
+    │         ┌──────┐        │   ║           ║                               │
+    │         │HWCT  │        │   ║           ║                               │
+    │         │ -004 ├────────╫───╫──(5Ω)──┬─╫─(100Ω)──┬── AIN0P             │
+    │         │1:1000│        ║   ║        │ ║         │                      │
+    │         │      ├────────╫───╫──     AGND       (680nF)          ADS131M02
+    │         └──────┘        ║   ║  (5Ω)──┘ ║         │           (3.3V, shared
+    │                         ║   ║  Rb/2    ╫─(100Ω)──┴── AIN0N    GND w/ ESP32)
+    │           1kV isolation ║   ║          ║  Rfilt_in             │
+    │                         ║   ║          ║                       │
+    │                         ║   ║          ║     SCLK ────────────┤── GPIO 18
+    │                         ║   ║          ║     DIN  ────────────┤── GPIO 23
+    │                         ║   ║          ║     DOUT ────────────┤── GPIO 19
+    │                         ║   ║          ║     CS   ────────────┤── GPIO 5
+    │                         ║   ║          ║     DRDY ────────────┤── GPIO 4
+    │                         ║   ║          ║                       │
+    │                         ║   ║          ║     AVDD ────────────┤── 3.3V
+    │                         ║   ║          ║     DVDD ────────────┤── 3.3V
+    │                         ║   ║          ║     AGND ────────────┤── GND
+    │                         ║   ║          ║     DGND ────────────┤── GND
+    │                         ║   ║          ║                       │
+    └─────────────────────────┘   ║          ║     CLKIN ───────────┤── 8.192 MHz
+                                  ║          ║                       │
 ```
 
 ### 6.3 Decoupling
@@ -701,11 +760,10 @@ The inter-sample period at 4 kSPS is 250 $\mu$s, so the SPI read occupies only 1
 | CT1 | HWCT-004 current transformer | 50 A : 50 mA | 1 kV isolation, PCB-mount toroidal | 1 |
 | R_La | Current-limiting resistor (ZMPT101B) | 56 k$\Omega$ | 1 W, 1%, metal film, 200V rated | 1 |
 | R_Lb | Current-limiting resistor (ZMPT101B) | 56 k$\Omega$ | 1 W, 1%, metal film, 200V rated | 1 |
-| R_s | Sampling resistor (ZMPT101B) | 330 $\Omega$ | 0.1%, 15 ppm/$^\circ$C, metal film | 1 |
-| R_b | CT burden resistor | 10 $\Omega$ | 0.1%, 15 ppm/$^\circ$C, metal film | 1 |
-| R_f | Current channel filter resistor | 1 k$\Omega$ | 1%, metal film | 1 |
-| C_f | Current channel anti-alias cap | 68 nF | C0G/NP0 ceramic, 50 V | 1 |
-| C_v | Voltage channel anti-alias cap | 180 nF | C0G/NP0 or X7R ceramic, 50 V | 1 |
+| R_s1, R_s2 | Split sampling resistor (ZMPT101B) | 165 $\Omega$ | 0.1%, 15 ppm/$^\circ$C, metal film, matched pair | 2 |
+| R_b1, R_b2 | Split CT burden resistor | 5 $\Omega$ | 0.1%, 15 ppm/$^\circ$C, metal film, matched pair | 2 |
+| R_filt (x4) | Anti-alias filter resistor (both channels) | 100 $\Omega$ | 1%, metal film | 4 |
+| C_diff (x2) | Anti-alias differential cap (both channels) | 680 nF | C0G/NP0 ceramic, 50 V | 2 |
 | C1 | AVDD decoupling | 1 $\mu$F | C0G or X7R ceramic, 10 V | 1 |
 | C2 | DVDD decoupling | 1 $\mu$F | X7R ceramic, 10 V | 1 |
 | C3 | CAP pin (internal LDO) | 220 nF | X7R ceramic, 10 V | 1 |
@@ -734,7 +792,7 @@ The inter-sample period at 4 kSPS is 250 $\mu$s, so the SPI read occupies only 1
 | Galvanic isolation (V channel) | Optocoupler (comms only) | ZMPT101B, 4 kV | Full signal isolation |
 | Galvanic isolation (I channel) | CT (built-in) | CT (HWCT-004), 1 kV | Adequate for 220 V |
 | Galvanic isolation (digital bus) | Optocoupler (built-in) | Not needed (both sensors isolated) | Simpler |
-| Phase error (total, uncalibrated) | Unknown (internal) | $+0.06^\circ$ (above 10 A) | Nearly zero |
+| Phase error (total, uncalibrated) | Unknown (internal) | $-0.13^\circ$ (above 10 A) | Nearly zero |
 | Phase calibration complexity | N/A | Single register write | Trivial |
 | Power consumption (meter) | ~1 W (from AC mains) | ~13 mW + 0.45 W ($R_L$) | Comparable |
 | Current range | 0 – 100 A | 0 – 50 A | Adequate for residential |
@@ -779,9 +837,9 @@ With the HWCT-004's low and stable phase error, only a single-point calibration 
 
 $$\text{PHASE\_REG} = \text{round}\left(\frac{\phi_{\text{error}} \times f_{\text{CLKIN}}}{360^\circ \times f_{\text{mains}}}\right) = \text{round}\left(\frac{\phi_{\text{error}} \times 8{,}192{,}000}{360 \times 60}\right)$$
 
-For a measured phase error of $0.06^\circ$:
+For a measured phase error of $0.13^\circ$:
 
-$$\text{PHASE\_REG} = \text{round}\left(\frac{0.06 \times 8{,}192{,}000}{21{,}600}\right) = \text{round}(22.8) = 23$$
+$$\text{PHASE\_REG} = \text{round}\left(\frac{0.13 \times 8{,}192{,}000}{21{,}600}\right) = \text{round}(49.3) = 49$$
 
 This single register write during initialisation is the only phase correction needed. No current-dependent lookup table or multi-point calibration is required, thanks to the HWCT-004's nearly constant phase response.
 

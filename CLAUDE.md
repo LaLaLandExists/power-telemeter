@@ -213,6 +213,74 @@ uses a dedicated I2C bus on THT GPIOs.
 
 ---
 
+## Analog Frontend (Circuit / SPICE)
+
+The project currently uses PZEM-004T v3 for all AC measurements. A custom discrete
+analog frontend using ZMPT101B (voltage) + HWCT004 (current) is planned as a future
+extension or replacement for scenarios where higher integration or multi-phase sensing
+is needed.
+
+### SPICE source of truth
+
+`circuit/analog_frontend.cir` is the authoritative circuit document. It is written
+in standard SPICE netlist format compatible with ngspice and LTspice. Subcircuits
+`ZMPT101B`, `HWCT004`, and `ADCInterface` are defined there.
+
+### Pinout inference from SPICE
+
+When reading the SPICE netlist, GPIO assignments are embedded directly in the node
+names used in `ADCInterface` instance calls at the top level. Convention:
+
+```
+Xadc_v  adc_volt  gpio36  VCC  ADCInterface
+```
+
+Here `gpio36` is the SPICE node name AND the GPIO pin. To infer the full pinout from
+a SPICE netlist:
+
+1. Find every `ADCInterface` instance (`X...ADCInterface` lines).
+2. The second positional argument (after `in`) is the `out` node -- that is the GPIO.
+3. Trace any other top-level nodes named `gpioNN` or `gpiNN` to find non-ADC pins.
+4. Cross-check against the Hardware Pinout tables above for conflicts.
+
+### SPICE analysis workflow
+
+When given a `.cir` netlist, the analysis steps are:
+
+| Step | What to check |
+| ---- | ------------- |
+| `.op` / DC bias | Verify bias node (vbias = VCC/2 = 1.65 V) appears at all ADC nodes; flag any node stuck at rail |
+| `.tran` waveform | Confirm ADC output stays within 0.1--3.1 V across the full mains cycle; check for clipping at the Schottky clamps |
+| `.ac` sweep | Verify LP filter rolls off above ~1.5--2 kHz (fc = 1/(2*pi*R*C)); confirm <1% attenuation at 50/60 Hz fundamental |
+| `.meas` values | Report peak/min/swing on each ADC node; flag swing < 100 mV (poor SNR) or > 3.1 V (ADC saturation) |
+| Phase match | For power-factor measurement, voltage and current channels must have matched phase shift through their LP filters; use identical Rlpf/Clpf values |
+
+### ADC GPIO candidates
+
+These pins are currently unassigned and are free for the analog frontend:
+
+**ESP32-dev (gateway + standard node):**
+
+| Signal        | GPIO  | ADC channel   | Notes |
+| ------------- | ----- | ------------- | ----- |
+| Voltage sense | 36    | ADC1_CH0 (VP) | Input-only; no internal pull; lowest noise |
+| Current sense | 39    | ADC1_CH3 (VN) | Input-only; no internal pull |
+| Spare         | 35    | ADC1_CH7      | Input-only |
+
+**ESP32-S3 Super Mini (node S3 variants):**
+
+| Signal        | GPIO  | ADC channel | Conflict check |
+| ------------- | ----- | ----------- | -------------- |
+| Voltage sense | 10    | ADC1_CH9    | None (free) |
+| Current sense | 14    | ADC2_CH3    | ADC2 shares arbitration with WiFi; prefer ADC1 |
+| Spare         | 15    | ADC2_CH4    | Same ADC2 caveat |
+
+- Use `ADC_11db` attenuation for 0--3.3 V range (`analogSetAttenuation(ADC_11db)` in esp-idf).
+- ADC1 is preferred over ADC2 on both boards: ADC2 cannot be used while WiFi is active.
+- Never open-circuit the secondary of a CT (HWCT004); the PCB must always have the burden resistor populated before the primary conductor is energised.
+
+---
+
 ## TDMA Superframe Architecture
 
 ```
