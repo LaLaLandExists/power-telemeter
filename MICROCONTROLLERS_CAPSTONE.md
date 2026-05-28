@@ -227,6 +227,26 @@ The `node_s3_nettest` environment replaces PZEM hardware reads with a simulated 
 
 All `Serial.print` calls route through a non-blocking ring-buffer logger (`log_async.h`) drained by a low-priority Core 0 task. This keeps the TDMA timing loop on Core 1 free from blocking UART writes. Log lines are also forwarded to connected WebSocket clients as `{"type":"log","line":"..."}` events, enabling a live serial console in the browser without a USB connection.
 
+### A. Gateway Hardware
+
+**Gateway Schematic**
+
+![Gateway Schematic](schematics/gateway/gateway_schematic.svg)
+
+**Gateway PCB Layout**
+
+![Gateway PCB](schematics/gateway/gateway_doc.svg)
+
+### B. Sensor Node Hardware
+
+**Sensor Node Schematic**
+
+![Sensor Node Schematic](schematics/telemetry/telemetry_schematic.svg)
+
+**Sensor Node PCB Layout**
+
+![Sensor Node PCB](schematics/telemetry/telemetry_doc.svg)
+
 ---
 
 ## VII. EXPECTED OUTCOMES AND SIGNIFICANCE
