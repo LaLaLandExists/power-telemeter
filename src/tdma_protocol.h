@@ -6,6 +6,10 @@
  */
 #pragma once
 #include <Arduino.h>
+// hal_rtos.h is included here so waitUntilMs() can use vTaskDelay / pdMS_TO_TICKS
+// on all platforms.  On ESP32 these arrive transitively via <Arduino.h>; on STM32
+// they do not, so the explicit include is required.
+#include "hal/hal_rtos.h"
 #include "hal/hal_sys.h"  // halGetMac()
 #include "pkt_crypto.h"   // pktEncrypt / pktDecrypt / pktReceive (no-ops when !PKT_ENCRYPTION)
 

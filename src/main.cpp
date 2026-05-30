@@ -94,7 +94,11 @@
   #ifndef PZEM_FAKE
   #include <PZEM004Tv30.h>
   #endif
-  #include "node_tdma_task.h"
+  #ifdef TDMA_IRQ_DRIVEN
+    #include "node_irq_tdma.h"
+  #else
+    #include "node_tdma_task.h"
+  #endif
 #endif
 
 #ifdef PKT_ENCRYPTION
@@ -112,6 +116,21 @@
   #define LORA_PIN_DIO0   8
   #define LORA_PIN_RST    9
   #define LORA_PIN_DIO1   RADIOLIB_NC
+#elif defined(BOARD_STM32_F411)
+  // STM32F411CEU6 WeAct Black Pill -- SPI2 bus (PB12-PB15)
+  #define LORA_PIN_NSS    PB12
+  #define LORA_PIN_MOSI   PB15
+  #define LORA_PIN_MISO   PB14
+  #define LORA_PIN_SCK    PB13
+  #define LORA_PIN_DIO0   PB0
+  #define LORA_PIN_RST    PB1
+  // DIO1 (RxTimeout) is wired to PA1 in IRQ-driven builds only.
+  // Physical wire required: SX1278 DIO1 pad -> Black Pill PA1.
+  #ifdef TDMA_IRQ_DRIVEN
+    #define LORA_PIN_DIO1   PA1
+  #else
+    #define LORA_PIN_DIO1   RADIOLIB_NC
+  #endif
 #else
   // ESP32-dev (gateway + non-S3 node, shared layout)
   #define LORA_PIN_NSS    26
@@ -145,6 +164,15 @@
     #define LED_GREEN_PIN_  11
     #define LED_RED_PIN_    12
     #define NODE_BTN_PIN    13
+  #elif defined(BOARD_STM32_F411)
+    // STM32F411CEU6 WeAct Black Pill
+    // USART2 (PA2/PA3) -> PZEM; adjust pins here once hardware is finalised.
+    #define PZEM_TX_PIN     PA2  // STM32 TX -> PZEM RX
+    #define PZEM_RX_PIN     PA3  // STM32 RX <- PZEM TX
+    #define RELAY_PIN_      PA8  // active HIGH
+    #define LED_GREEN_PIN_  PC13 // onboard LED (active LOW on Black Pill -- invert if needed)
+    #define LED_RED_PIN_    PB5
+    #define NODE_BTN_PIN    PA0  // onboard KEY button, active LOW; has internal pull-up
   #else
     #define PZEM_TX_PIN     22   // ESP32 TX2 -> PZEM RX
     #define PZEM_RX_PIN     23   // ESP32 RX2 <- PZEM TX
@@ -164,13 +192,32 @@
 #endif
 
 // --- Hardware instances -------------------------------------------------------
-// Radio instance - extern-referenced by both gateway_tdma_task.cpp and node_tdma_task.cpp
-SX1278 radio = new Module(LORA_PIN_NSS, LORA_PIN_DIO0, LORA_PIN_RST, LORA_PIN_DIO1);
+
+// STM32duino SPIClass::begin() does not accept pin arguments -- pins must be
+// supplied to the constructor and the instance passed to RadioLib's Module.
+// On ESP32 the default SPI object is used; pins are configured via SPI.begin().
+#ifdef BOARD_STM32_F411
+  // MOSI, MISO, SCK -- RadioLib manages NSS as a GPIO, so it is omitted here.
+  static SPIClass s_loraSpi(LORA_PIN_MOSI, LORA_PIN_MISO, LORA_PIN_SCK);
+  SX1278 radio = new Module(LORA_PIN_NSS, LORA_PIN_DIO0, LORA_PIN_RST, LORA_PIN_DIO1, s_loraSpi);
+#else
+  // Radio instance - extern-referenced by both gateway_tdma_task.cpp and node_tdma_task.cpp
+  SX1278 radio = new Module(LORA_PIN_NSS, LORA_PIN_DIO0, LORA_PIN_RST, LORA_PIN_DIO1);
+#endif
 
 #ifdef NODE_TELEMETRY
   #ifndef PZEM_FAKE
-  // PZEM-004T v3 on Serial2 - extern-referenced by node_tdma_task.cpp
+  // PZEM-004T v3 on Serial2 - extern-referenced by node_tdma_task.cpp.
+  // ESP32 constructor accepts (port, rx_pin, tx_pin) for runtime UART remapping.
+  // STM32: create an explicit HardwareSerial bound to PZEM_RX/TX pins.
+  // STM32duino resolves the correct UART peripheral (USART2) from PA2/PA3
+  // automatically -- this avoids relying on Serial2 being enabled by the variant.
+  #ifdef BOARD_STM32_F411
+  static HardwareSerial s_pzemSerial(PZEM_RX_PIN, PZEM_TX_PIN);
+  PZEM004Tv30 pzem(s_pzemSerial);
+  #else
   PZEM004Tv30 pzem(Serial2, PZEM_RX_PIN, PZEM_TX_PIN);
+  #endif
   #endif
 #endif
 
@@ -323,7 +370,7 @@ void loop() {
 // NODE_BTN_PIN is active LOW; GPIO34 (ESP32-dev) is input-only -- external pull-up required.
 // GPIO13 (S3 Super Mini) supports internal pull-up.
 static void btnTask(void*) {
-#ifdef BOARD_S3_SUPERMINI
+#if defined(BOARD_S3_SUPERMINI) || defined(BOARD_STM32_F411)
   pinMode(NODE_BTN_PIN, INPUT_PULLUP);
 #else
   pinMode(NODE_BTN_PIN, INPUT);
@@ -404,9 +451,15 @@ void setup() {
 #endif
 
   // -- SX1278 radio ----------------------------------------------------------
+#ifdef BOARD_STM32_F411
+  // STM32duino SPIClass::begin() takes no pin args -- pins are in the constructor.
+  s_loraSpi.begin();
+#else
   SPI.begin(LORA_PIN_SCK, LORA_PIN_MISO, LORA_PIN_MOSI, LORA_PIN_NSS);
+#endif
 #ifdef BOARD_S3_SUPERMINI
   // SPI.begin() resets GPIO11/12 (default FSPI pins) to INPUT, clobbering the pinMode above.
+  // Re-assert after SPI init so LED control is not lost.
   pinMode(LED_GREEN_PIN_, OUTPUT);
   pinMode(LED_RED_PIN_,   OUTPUT);
 #endif

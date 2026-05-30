@@ -1,428 +1,38 @@
 /**
  * node_tdma_task.cpp
  *
+ * Task-based TDMA state machine for ESP32 and non-IRQ STM32 builds.
+ * Excluded when TDMA_IRQ_DRIVEN is defined.
+ *
+ * Shared code (globals, LED, PZEM task, handleDownlink, buildTelemetryPacket,
+ * GFSK bulk, schedule RTC) lives in node_tdma_common.cpp.
+ *
  * State machine:
- *   BOOT -> LISTEN -> CONTENDING -> REGISTERED -> (repeat via LISTEN each superframe)
+ *   BOOT -> LISTEN -> CONTENDING -> REGISTERED -> (repeat via LISTEN)
  *
  * Timing model (DL-first slot ordering):
- *   - The node records beaconReceiveTime = millis() when a beacon lands.
+ *   - beaconReceiveTime = millis() when beacon lands.
  *   - dlStart = beaconReceiveTime + (BEACON_MS - BEACON_AIR_MS) + (slotId-1) x SLOT_PAIR_MS
- *   - Node RX DL during [dlStart, dlStart + SLOT_DL_MS); self-evicts on UID mismatch.
- *   - txTime = dlStart + SLOT_DL_MS; node TX UL if still registered after DL check.
- *   - PZEM task refreshes g_pzem continuously (~500 ms); no explicit pre-read wait.
- *   - After UL, node returns to LISTEN on Ch 0 for the next beacon.
- *
- * Dual clock:
- *   Clock 1 (TDMA timing) - re-derived from each beacon.  us-level discipline.
- *   Clock 2 (Schedule RTC) - free-running millis() based wall clock.
- *                             Updated only when |delta| > RTC_CORRECTION_THRESHOLD_MS.
- *
- * Relay schedule evaluation:
- *   Uses Clock 2 (not the TDMA clock) to decide ON/OFF.  This prevents
- *   gateway browser-clock jitter from causing relay flicker at schedule boundaries.
+ *   - txTime  = dlStart + SLOT_DL_MS
  */
+#ifndef TDMA_IRQ_DRIVEN
 
-#include "node_tdma_task.h"
+#include "node_tdma_common.h"
 #include "log_async.h"
 #include "hal/hal_sys.h"
 #include "hal/hal_rtos.h"
 #include <RadioLib.h>
-#ifndef PZEM_FAKE
-#include <PZEM004Tv30.h>
-#endif
-#ifdef PZEM_FAKE
-#include "node_fake_pzem.h"
-#endif
 
-// --- Relay / LED GPIO --------------------------------------------------------
-extern uint8_t RELAY_PIN;       // Defined in main.cpp (NODE_TELEMETRY build)
-extern uint8_t LED_GREEN_PIN;   // Defined in main.cpp (NODE_TELEMETRY build)
-extern uint8_t LED_RED_PIN;     // Defined in main.cpp (NODE_TELEMETRY build)
-extern uint8_t DIO0_PIN;        // Defined in main.cpp (NODE_TELEMETRY build)
-
-// --- Radio instance (defined in main.cpp) ------------------------------------
 extern SX1278 radio;
+extern uint8_t DIO0_PIN;
 
-// --- PZEM instance (defined in main.cpp) -------------------------------------
-#ifndef PZEM_FAKE
-extern PZEM004Tv30 pzem;
-#endif
+// =============================================================================
+// RX window helper
+// =============================================================================
 
-// --- Global state definitions -------------------------------------------------
-PzemData         g_pzem        = {};
-SemaphoreHandle_t g_pzemMutex  = nullptr;
-
-bool     g_nodeRegistered = false;
-uint8_t  g_nodeSlotId     = 0;
-uint16_t g_nodeUID        = 0;
-
-uint8_t  g_relayState = 0;
-uint8_t  g_relayMode  = 0;
-uint8_t  g_schedState = 0;
-uint8_t  g_schedSH    = 0;
-uint8_t  g_schedSM    = 0;
-uint8_t  g_schedEH    = 8;
-uint8_t  g_schedEM    = 0;
-
-uint32_t g_rtcBaseSec = 0;
-uint32_t g_rtcBaseMs  = 0;
-bool     g_rtcSet     = false;
-
-static uint8_t g_seqCounter       = 0;
-static bool    s_dlAck            = false; // set when a DL is decoded; packed into seqCounter[7] on next UL
-static int8_t  g_beaconRSSI       = -128;
-static uint8_t s_joinEpoch        = 0xFF; // epoch captured at last successful JoinAck
-static uint8_t s_lastBeaconEpoch  = 0xFF; // epoch from most recently received beacon
-
-// -- Bulk transfer state (node side) ------------------------------------------
-static bool     s_bulkGrantReceived = false;
-static uint8_t  s_bulkDir           = 0;    // 0=DL (receive), 1=UL (send)
-static uint8_t  s_bulkTypeTag       = 0;
-static uint16_t s_bulkTotalLen      = 0;
-static bool     s_bulkReady         = false; // set STATUS_BULK_READY in next UL
-static uint8_t  s_nodeBulkBuf[BULK_MAX_PAYLOAD];
-
-// -----------------------------------------------------------------------------
-// Relay control
-// -----------------------------------------------------------------------------
-void setRelay(uint8_t state) {
-  g_relayState = state & 1;
-#ifndef PZEM_FAKE
-  digitalWrite(RELAY_PIN, g_relayState ? HIGH : LOW);
-#endif
-}
-
-// -----------------------------------------------------------------------------
-// Schedule clock helpers
-// -----------------------------------------------------------------------------
-
-/** Set the schedule RTC from H/M/S (beacon time). */
-static void rtcSet(uint8_t h, uint8_t m, uint8_t s) {
-  g_rtcBaseSec = (uint32_t)h * 3600u + (uint32_t)m * 60u + s;
-  g_rtcBaseMs  = millis();
-  g_rtcSet     = true;
-}
-
-/**
- * Conditionally update the RTC from the beacon.
- * Only corrects if the delta exceeds RTC_CORRECTION_THRESHOLD_MS.
- * This prevents gateway browser-clock jitter from flickering relays.
- */
-static void rtcConditionalSync(uint8_t beaconH, uint8_t beaconM, uint8_t beaconS) {
-  uint32_t beaconSec = (uint32_t)beaconH * 3600u + beaconM * 60u + beaconS;
-  if (!g_rtcSet) {
-    rtcSet(beaconH, beaconM, beaconS);
-    return;
-  }
-  uint32_t localSec  = rtcGetSec();
-  int32_t  delta_ms  = (int32_t)(localSec  - beaconSec) * 1000;
-
-  // Handle midnight wrap (+/-12 h window)
-  if (delta_ms >  43200000L) delta_ms -= 86400000L;
-  if (delta_ms < -43200000L) delta_ms += 86400000L;
-
-  if (abs(delta_ms) > RTC_CORRECTION_THRESHOLD_MS) {
-    rtcSet(beaconH, beaconM, beaconS);
-    logAsync("[NODE-RTC] Corrected %+d ms\n", delta_ms);
-  }
-}
-
-// -----------------------------------------------------------------------------
-// Schedule evaluation
-// Evaluates whether current RTC time falls inside the scheduled ON window.
-// Supports midnight-wrap: endH:endM < startH:startM is allowed.
-// Updates g_schedState and calls setRelay() when g_relayMode == 1.
-// -----------------------------------------------------------------------------
-static void evaluateSchedule() {
-  if (g_relayMode != 1 || g_schedState == 0) return;
-
-  uint16_t nowMins   = (uint16_t)(rtcGetSec() / 60);
-  uint16_t startMins = (uint16_t)g_schedSH * 60 + g_schedSM;
-  uint16_t endMins   = (uint16_t)g_schedEH * 60 + g_schedEM;
-
-  bool inside;
-  if (startMins <= endMins) {
-    // Normal window: 08:00-17:00
-    inside = (nowMins >= startMins && nowMins < endMins);
-  } else {
-    // Midnight-wrap: 22:00-06:00 -> inside if >=22:00 OR <06:00
-    inside = (nowMins >= startMins || nowMins < endMins);
-  }
-
-  uint8_t newSchedState = inside ? 2 : 1;  // 2=ACTIVE, 1=WAITING
-  if (newSchedState != g_schedState) {
-    g_schedState = newSchedState;
-    logAsync("[NODE-SCHED] %s (now=%02d:%02d)\n",
-             inside ? "ACTIVE" : "WAITING",
-             nowMins / 60, nowMins % 60);
-  }
-  // Always enforce relay to match schedule -- handles initial activation where
-  // g_schedState was pre-set to WAITING (1) so no state change is detected,
-  // yet the relay still needs to be driven to match the window state.
-  setRelay(inside ? 1 : 0);
-}
-
-// -----------------------------------------------------------------------------
-// PZEM_ENERGY_MAX_WH -- counter rolls over to 0 after this value.
-// PZEM-004T v3 display limit: 9999.99 kWh = 9,999,990 Wh.
-#define PZEM_ENERGY_MAX_WH 9999990UL
-
-// Node-side energy delta state -- persists across superframes.
-// pkt.energy carries Wh increments, not the raw counter, so the gateway
-// accumulator is immune to PZEM counter rollovers and power-cycle resets.
-static uint32_t s_lastPzemEnergy    = 0;
-static bool     s_pzemEnergyBaseSet = false;
-
-// LED state indicator + nudge override
-// -----------------------------------------------------------------------------
-// A two-color LED (red=LED_RED_PIN, green=LED_GREEN_PIN) provides a persistent
-// visual readout of the node's TDMA state:
-//
-//   ST_LISTEN      -> red slow blink     (500 ms on / 500 ms off)  no beacon = possible key mismatch
-//   ST_CONTENDING  -> green fast blink   (125 ms on / 125 ms off)
-//   ST_REGISTERED  -> green heartbeat    ( 50 ms on / 1800 ms off)
-//
-// PKT_NUDGE overrides all state patterns with a 3 s red rapid-blink
-// (100 ms on/off), then reverts to the current TDMA state pattern.
-//
-// ledTask() lives on Core 0 (priority 1) and uses ulTaskNotifyTake() as both
-// the nudge wakeup mechanism and a yield-aware timer for LED off-periods.
-// This means a nudge interrupts even the 1800 ms REGISTERED off-time within
-// one notification-check interval.
-//
-// triggerNudge() - called from handleDownlink() on the TDMA task (Core 1) -
-// calls xTaskNotifyGive(), which is an atomic TCB counter increment.
-// No heap allocation, no scheduler overhead, returns in < 1 us.
-// -----------------------------------------------------------------------------
-
-typedef enum { LED_MODE_LISTEN, LED_MODE_CONTENDING, LED_MODE_REGISTERED } LedTdmaMode_t;
-
-static volatile LedTdmaMode_t s_tdmaLedMode = LED_MODE_LISTEN;
-static TaskHandle_t           s_ledTaskHandle = nullptr;
-
-static void setLed(bool red, bool green) {
-  digitalWrite(LED_RED_PIN,   red   ? LOW : HIGH);
-  digitalWrite(LED_GREEN_PIN, green ? LOW : HIGH);
-}
-
-static void ledTask(void* /*params*/) {
-  while (true) {
-    bool nudged = (ulTaskNotifyTake(pdTRUE, 0) > 0);
-
-    if (!nudged) {
-      switch (s_tdmaLedMode) {
-      case LED_MODE_LISTEN:
-        // Red slow blink - no beacon heard; on encrypted builds this can mean key mismatch
-        setLed(true, false);
-        nudged = (ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS(500)) > 0);
-        setLed(false, false);
-        if (!nudged) nudged = (ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS(500)) > 0);
-        break;
-
-      case LED_MODE_CONTENDING:
-        // Green fast blink - join attempt in progress
-        setLed(false, true);
-        nudged = (ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS(125)) > 0);
-        setLed(false, false);
-        if (!nudged) nudged = (ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS(125)) > 0);
-        break;
-
-      case LED_MODE_REGISTERED:
-        // Heartbeat: green = relay OFF, yellow = relay ON (load energized)
-        setLed(g_relayState, true);
-        nudged = (ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS(50)) > 0);
-        setLed(false, false);
-        if (!nudged) nudged = (ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS(1800)) > 0);
-        break;
-      }
-    }
-
-    if (nudged) {
-      logAsync("[NODE] Nudge!\n");
-      for (int i = 0; i < 30; i++) {
-        setLed(i & 1, false);         // red rapid blink
-        vTaskDelay(pdMS_TO_TICKS(100));
-      }
-      setLed(false, false);
-      xTaskNotifyStateClear(nullptr); // drain stacked notifications
-    }
-  }
-}
-
-static void triggerNudge() {
-  if (s_ledTaskHandle == nullptr) return;
-  xTaskNotifyGive(s_ledTaskHandle);   // atomic; safe from any core/ISR
-}
-
-// -----------------------------------------------------------------------------
-// Process downlink command received in DL window.
-//
-// All DL packets share the DlHeader layout:
-//   buf[0] = pktType
-//   buf[1] = nodeId
-//   buf[2+] = command-specific payload
-//
-// Slot validity is guaranteed by the epoch field in BeaconPacket: a node whose
-// stored s_joinEpoch differs from the beacon epoch re-contends before reaching
-// this point, so stale registrations cannot receive commands intended for another
-// device.
-// -----------------------------------------------------------------------------
-static void handleDownlink(const uint8_t* buf, int16_t len) {
-  if (len < 2) return;
-  uint8_t type   = buf[0];
-  uint8_t nodeId = buf[1];
-
-  if (nodeId != g_nodeSlotId && nodeId != BROADCAST_ADDR) return;
-
-  switch (type) {
-  case PKT_RELAY_MANUAL:   // 3 bytes: DlHeader + relayState
-    if (len >= 3) {
-      g_relayMode  = 0;
-      g_schedState = 0;
-      setRelay(buf[2]);
-      logAsync("[NODE-DL] Relay manual -> %s\n", buf[2] ? "ON" : "OFF");
-    }
-    break;
-
-  case PKT_RELAY_SCHEDULE: // 7 bytes: DlHeader + onState + sH + sM + eH + eM
-    if (len >= 7) {
-      g_relayMode  = 1;
-      g_schedSH    = buf[3];
-      g_schedSM    = buf[4];
-      g_schedEH    = buf[5];
-      g_schedEM    = buf[6];
-      g_schedState = 1;     // WAITING; evaluateSchedule() will flip to ACTIVE
-      evaluateSchedule();
-      logAsync("[NODE-DL] Schedule set %02d:%02d - %02d:%02d\n",
-               g_schedSH, g_schedSM, g_schedEH, g_schedEM);
-    }
-    break;
-
-  case PKT_RELAY_CLEAR:    // 2 bytes: DlHeader only
-    g_relayMode  = 0;
-    g_schedState = 0;
-    logAsync("[NODE-DL] Schedule cleared\n");
-    break;
-
-  case PKT_THRESHOLD:      // 4 bytes: DlHeader + thresh_lo + thresh_hi
-    if (len >= 4) {
-      uint16_t watts = (uint16_t)buf[2] | ((uint16_t)buf[3] << 8);
-      // Queue the write for pzemTask -- it is the sole owner of Serial2.
-      if (xSemaphoreTake(g_pzemMutex, pdMS_TO_TICKS(100)) == pdTRUE) {
-        g_pzem.alarmThreshold      = watts;
-        g_pzem.pendingThresholdW   = watts;
-        g_pzem.hasPendingThreshold = true;
-        xSemaphoreGive(g_pzemMutex);
-      }
-      logAsync("[NODE-DL] Alarm threshold queued -> %d W\n", watts);
-    }
-    break;
-
-  case PKT_NUDGE:          // 2 bytes: DlHeader only
-    triggerNudge();
-    break;
-
-  case PKT_BULK_GRANT:     // 6 bytes: DlHeader + bulkDir + bulkType + totalLen lo/hi
-    if (len >= (int16_t)sizeof(BulkGrantPacket)) {
-      const BulkGrantPacket* g = reinterpret_cast<const BulkGrantPacket*>(buf);
-      s_bulkDir           = g->bulkDir;
-      s_bulkTypeTag       = g->bulkType;
-      s_bulkTotalLen      = (uint16_t)g->totalLen_lo | ((uint16_t)g->totalLen_hi << 8);
-      s_bulkGrantReceived = true;
-      s_bulkReady         = true;
-      logAsync("[NODE-DL] BulkGrant dir=%d type=0x%02X len=%u\n",
-               s_bulkDir, s_bulkTypeTag, s_bulkTotalLen);
-    }
-    return; // grant does not set s_dlAck (no relay command to confirm)
-
-  default:
-    logAsync("[NODE-DL] Unknown packet type 0x%02X\n", type);
-    return; // unknown -- do not set dlAck
-  }
-  s_dlAck = true;
-}
-
-// -----------------------------------------------------------------------------
-// Build and transmit TelemetryPacket
-// sfCount is the superframe counter decoded from the last beacon, used as
-// nonce material in encrypted builds.
-// -----------------------------------------------------------------------------
-static void transmitTelemetry(uint16_t sfCount) {
-  TelemetryPacket pkt = {};
-
-  if (xSemaphoreTake(g_pzemMutex, pdMS_TO_TICKS(50)) == pdTRUE) {
-    // Convert float readings to fixed-point wire format
-    pkt.voltage       = (uint16_t)(g_pzem.voltage      * 10.0f);
-    pkt.current       = (uint32_t)(g_pzem.current      * 1000.0f);
-    pkt.power         = (uint32_t)(g_pzem.power        * 10.0f);
-    // Compute Wh increment since last packet (node-side delta encoding).
-    // Sending deltas makes the gateway accumulator immune to PZEM counter
-    // rollovers (at PZEM_ENERGY_MAX_WH) and power-cycle resets.
-    uint32_t rawEnergy = g_pzem.energy;
-    uint32_t energyDelta;
-    if (!s_pzemEnergyBaseSet) {
-      s_lastPzemEnergy    = rawEnergy;
-      s_pzemEnergyBaseSet = true;
-      energyDelta = 0;  // first packet -- no increment yet
-    } else if (rawEnergy >= s_lastPzemEnergy) {
-      energyDelta = rawEnergy - s_lastPzemEnergy;  // normal increment
-    } else {
-      // Counter rolled over: Wh consumed = (max - last) + post-rollover
-      energyDelta = (PZEM_ENERGY_MAX_WH - s_lastPzemEnergy) + rawEnergy;
-    }
-    s_lastPzemEnergy = rawEnergy;
-    pkt.energy = energyDelta;   // Wh increment since last packet
-    pkt.frequency     = (uint16_t)(g_pzem.frequency    * 10.0f);
-    pkt.powerFactor   = (uint16_t)(g_pzem.powerFactor  * 100.0f);
-    pkt.alarmThreshold = g_pzem.alarmThreshold;
-    xSemaphoreGive(g_pzemMutex);
-  }
-
-  // Determine alarm state from PZEM data (power > threshold)
-  uint8_t alarmState = 0;
-  if (pkt.alarmThreshold > 0 &&
-    (pkt.power / 10) >= pkt.alarmThreshold) {
-    alarmState = 1;
-  }
-
-  pkt.pktType    = PKT_TELEMETRY;
-  pkt.nodeId     = g_nodeSlotId;
-  pkt.uid        = g_nodeUID;
-  pkt.statusByte = encodeStatus(g_relayState, g_relayMode, g_schedState, alarmState);
-  if (s_bulkReady) pkt.statusByte |= STATUS_BULK_READY;
-  pkt.schedSH    = g_schedSH;
-  pkt.schedSM    = g_schedSM;
-  pkt.schedEH    = g_schedEH;
-  pkt.schedEM    = g_schedEM;
-  // seqCounter[7] = dlAck (one-shot; cleared after this TX); [6:0] = rolling counter
-  pkt.seqCounter = (s_dlAck ? 0x80u : 0x00u) | (++g_seqCounter & 0x7Fu);
-  s_dlAck = false;
-  pkt.beaconRSSI = (uint8_t)(int8_t)g_beaconRSSI;
-  pkt.fwVersion  = FW_VERSION;
-
-  uint8_t txBuf[sizeof(TelemetryPacket)];
-  memcpy(txBuf, &pkt, sizeof(pkt));
-  pktEncrypt(txBuf, sizeof(txBuf), sfCount, g_nodeSlotId, PKT_DIR_UL);
-  int16_t st = radio.transmit(txBuf, sizeof(txBuf));
-  if (st == RADIOLIB_ERR_NONE) {
-    logAsync("[NODE-TX] V=%.1f A=%.3f W=%.1f seq=%d\n",
-                 g_pzem.voltage, g_pzem.current, g_pzem.power, g_seqCounter);
-  } else {
-    logAsync("[NODE-TX] Error %d\n", st);
-  }
-}
-
-// -----------------------------------------------------------------------------
-// Receive with timeout helper
-// Radio must be in startReceive() before calling.
-// Returns bytes received, or -1 on timeout.
-// -----------------------------------------------------------------------------
 static int16_t rxWindow(uint8_t* buf, size_t maxLen, uint32_t windowMs) {
   uint32_t deadline = millis() + windowMs;
   while ((int32_t)(deadline - millis()) > 0) {
-    // radio.available() relies on the DIO0 interrupt edge; also poll the pin
-    // directly as a fallback for marginal breadboard contacts that pass the
-    // level check but produce edges too slow to fire attachInterrupt().
     bool pktReady = radio.available() ||
                     (digitalRead(DIO0_PIN) && radio.getPacketLength() > 0);
     if (pktReady) {
@@ -430,7 +40,7 @@ static int16_t rxWindow(uint8_t* buf, size_t maxLen, uint32_t windowMs) {
       if (len > 0 && (size_t)len <= maxLen) {
         int16_t st = radio.readData(buf, (size_t)len);
         if (st == RADIOLIB_ERR_NONE) return (int16_t)len;
-        logAsync("[NODE] RX err %d len=%d\n", st, len);  // CRC or SPI failure
+        logAsync("[NODE] RX err %d len=%d\n", st, len);
       }
       return -1;
     }
@@ -439,184 +49,54 @@ static int16_t rxWindow(uint8_t* buf, size_t maxLen, uint32_t windowMs) {
   return -1;
 }
 
-// FSK receive window -- no digitalRead(DIO0_PIN) fallback; DIO0 fires
-// PayloadReady in FSK mode so radio.available() is reliable.
-static int16_t rxWindowFsk(uint8_t* buf, size_t maxLen, uint32_t windowMs) {
-  uint32_t deadline = millis() + windowMs;
-  while ((int32_t)(deadline - millis()) > 0) {
-    if (radio.available()) {
-      int len = radio.getPacketLength();
-      if (len > 0 && (size_t)len <= maxLen) {
-        int16_t st = radio.readData(buf, (size_t)len);
-        if (st == RADIOLIB_ERR_NONE) return (int16_t)len;
-      }
-      return -1;
-    }
-    vTaskDelay(pdMS_TO_TICKS(1));
-  }
-  return -1;
-}
+// =============================================================================
+// Transmit telemetry (blocking)
+// Builds packet via buildTelemetryPacket(), encrypts, then calls radio.transmit().
+// =============================================================================
 
-// Node GFSK stop-and-wait sender (UL: node -> gateway).
-// Reads from s_nodeBulkBuf using s_bulkTotalLen.
-// sfCount is used to construct per-fragment encryption nonces.
-static void nodeRunBulkSend(uint16_t sfCount) {
-  uint16_t offset = 0;
-  uint8_t  seqNum = 0;
-  uint16_t total  = s_bulkTotalLen;
+static void transmitTelemetry(uint16_t sfCount) {
+  TelemetryPacket pkt;
+  buildTelemetryPacket(pkt);
 
-  uint8_t fragBuf[BULK_FRAG_TOTAL];
-  uint8_t ackBuf[sizeof(BulkAckPacket)];
-  uint32_t deadline = millis() + BULK_MAX_WINDOW_MS;
+  uint8_t txBuf[sizeof(TelemetryPacket)];
+  memcpy(txBuf, &pkt, sizeof(pkt));
+  pktEncrypt(txBuf, sizeof(txBuf), sfCount, g_nodeSlotId, PKT_DIR_UL);
 
-  while (offset < total) {
-    if ((int32_t)(deadline - millis()) <= 0) {
-      logAsync("[NODE-BULK] TX window expired offset=%u\n", offset);
-      return;
-    }
-
-    uint16_t chunkLen = total - offset;
-    if (chunkLen > BULK_FRAG_PAYLOAD) chunkLen = BULK_FRAG_PAYLOAD;
-    bool isLast = (offset + chunkLen >= total);
-
-    BulkFragHeader* hdr = reinterpret_cast<BulkFragHeader*>(fragBuf);
-    hdr->pktType    = PKT_BULK_FRAG;
-    hdr->seqNum     = seqNum;
-    hdr->payloadLen = (uint8_t)chunkLen;
-    hdr->flags      = isLast ? 0x01 : 0x00;
-    memcpy(fragBuf + BULK_FRAG_HEADER_LEN, s_nodeBulkBuf + offset, chunkLen);
-
-    uint16_t synth_sf = (uint16_t)(((uint16_t)seqNum << 8) | (sfCount & 0xFF));
-    pktEncrypt(fragBuf + BULK_FRAG_HEADER_LEN, chunkLen, synth_sf, g_nodeSlotId, PKT_DIR_BULK_UL);
-
-    bool acked = false;
-    for (uint8_t retry = 0; retry <= BULK_MAX_RETRIES && !acked; retry++) {
-      int16_t st = radio.transmit(fragBuf, (size_t)(BULK_FRAG_HEADER_LEN + chunkLen));
-      if (st != RADIOLIB_ERR_NONE) {
-        logAsync("[NODE-BULK] TX err %d seq=%d\n", st, seqNum);
-        continue;
-      }
-      radio.startReceive();
-      int16_t rxLen = rxWindowFsk(ackBuf, sizeof(ackBuf), BULK_ACK_TIMEOUT_MS);
-      if (rxLen == (int16_t)sizeof(BulkAckPacket)) {
-        const BulkAckPacket* ack = reinterpret_cast<const BulkAckPacket*>(ackBuf);
-        if (ack->seqNum == seqNum && ack->pktType == PKT_BULK_ACK) {
-          acked = true;
-        }
-      }
-    }
-
-    if (!acked) {
-      logAsync("[NODE-BULK] no ACK seq=%d\n", seqNum);
-      return;
-    }
-
-    offset += chunkLen;
-    seqNum++;
-  }
-
-  logAsync("[NODE-BULK] UL done: %u B\n", total);
-}
-
-// Node GFSK stop-and-wait receiver (DL: gateway -> node).
-// Assembles into s_nodeBulkBuf.  For typeTag 0xF0, calls nodeRunBulkSend() to echo.
-static void nodeRunBulkReceive(uint16_t sfCount) {
-  uint16_t bufOff = 0;
-  uint8_t  expSeq = 0;
-
-  uint8_t fragBuf[BULK_FRAG_TOTAL];
-  uint8_t ackBuf[sizeof(BulkAckPacket)];
-  uint32_t deadline = millis() + BULK_MAX_WINDOW_MS;
-
-  radio.startReceive();
-
-  while (true) {
-    if ((int32_t)(deadline - millis()) <= 0) {
-      logAsync("[NODE-BULK] RX window expired seq=%d\n", expSeq);
-      return;
-    }
-
-    int16_t rxLen = rxWindowFsk(fragBuf, sizeof(fragBuf), BULK_ACK_TIMEOUT_MS * 2);
-    if (rxLen < (int16_t)(BULK_FRAG_HEADER_LEN + 1)) {
-      radio.startReceive();
-      continue;
-    }
-
-    const BulkFragHeader* hdr = reinterpret_cast<const BulkFragHeader*>(fragBuf);
-    uint8_t* payload = fragBuf + BULK_FRAG_HEADER_LEN;
-
-    if (hdr->pktType != PKT_BULK_FRAG || hdr->seqNum != expSeq ||
-        hdr->payloadLen == 0 || hdr->payloadLen > BULK_FRAG_PAYLOAD) {
-      BulkAckPacket nack;
-      nack.seqNum  = expSeq;
-      nack.pktType = PKT_BULK_NACK;
-      memcpy(ackBuf, &nack, sizeof(nack));
-      radio.transmit(ackBuf, sizeof(ackBuf));
-      radio.startReceive();
-      continue;
-    }
-
-    uint16_t synth_sf = (uint16_t)(((uint16_t)hdr->seqNum << 8) | (sfCount & 0xFF));
-    pktDecrypt(payload, hdr->payloadLen, synth_sf, g_nodeSlotId, PKT_DIR_BULK_DL);
-
-    if (bufOff + hdr->payloadLen <= BULK_MAX_PAYLOAD) {
-      memcpy(s_nodeBulkBuf + bufOff, payload, hdr->payloadLen);
-      bufOff += hdr->payloadLen;
-    }
-
-    BulkAckPacket ack;
-    ack.seqNum  = hdr->seqNum;
-    ack.pktType = PKT_BULK_ACK;
-    memcpy(ackBuf, &ack, sizeof(ack));
-    radio.transmit(ackBuf, sizeof(ackBuf));
-
-    if (hdr->flags & 0x01) {
-      // LAST_FRAG: echo if typeTag 0xF0 (compiled in all builds)
-      if (s_bulkTypeTag == 0xF0 && bufOff > 0) {
-        s_bulkTotalLen = bufOff;
-        nodeRunBulkSend(sfCount);
-      }
-      logAsync("[NODE-BULK] DL done: %u B\n", bufOff);
-      return;
-    }
-    expSeq++;
-    radio.startReceive();
+  int16_t st = radio.transmit(txBuf, sizeof(txBuf));
+  if (st == RADIOLIB_ERR_NONE) {
+    logAsync("[NODE-TX] V=%.1f A=%.3f W=%.1f seq=%d\n",
+             g_pzem.voltage, g_pzem.current, g_pzem.power,
+             pkt.seqCounter & 0x7F);
+  } else {
+    logAsync("[NODE-TX] Error %d\n", st);
   }
 }
 
-// -----------------------------------------------------------------------------
-// TDMA node state machine
-// -----------------------------------------------------------------------------
+// =============================================================================
+// TDMA node state machine task
+// =============================================================================
+
 typedef enum { ST_LISTEN, ST_CONTENDING, ST_REGISTERED } NodeState_t;
 
 static void nodeTdmaTask(void* /*params*/) {
   logAsync("[NODE-TDMA] Task started on Core 1\n");
 
-  NodeState_t state            = ST_LISTEN;
+  NodeState_t state             = ST_LISTEN;
   uint32_t    beaconReceiveTime = 0;
   uint16_t    sfCount           = 0;
 
-  // Tune to Ch 0; startReceive() is called at the top of the beacon listen loop.
   radio.setFrequency(LORA_CHANNELS[0]);
 
   while (true) {
 
-    // -- LISTEN: wait for a beacon on Ch 0 --------------------------------
+    // -- LISTEN ----------------------------------------------------------------
     if (state == ST_LISTEN || state == ST_CONTENDING || state == ST_REGISTERED) {
-      // Wait up to the listen timeout for a valid beacon on Ch 0.
-      // Stray packets (DL/UL from other slots bleeding through) restart the
-      // receive without consuming the full window -- only a genuine timeout or
-      // a valid beacon exits the loop.
       uint8_t buf[64];
       radio.setFrequency(LORA_CHANNELS[0]);
 
       uint32_t listenTimeout  = (state == ST_LISTEN) ? 10000 : SUPERFRAME_MS + 200;
       uint32_t listenDeadline = millis() + listenTimeout;
 
-      // pktReceiveBeacon reads sfCount from the plaintext prefix (bytes 0-1), then
-      // decrypts bytes 2-7 with nonce (sfCount, 0, PKT_DIR_BEACON) in encrypted
-      // builds, or does a plain memcpy cast in plain builds.  A foreign-network
-      // beacon decrypts to garbage pktType and is rejected by the check below.
       BeaconPacket bcn;
       bool isBeacon = false;
 
@@ -624,10 +104,6 @@ static void nodeTdmaTask(void* /*params*/) {
         int32_t remaining = (int32_t)(listenDeadline - millis());
         if (remaining <= 0) break;
 
-        // standby() before startReceive() -- the radio may be left in RXCONTINUOUS
-        // mode by a previous timeout (JoinAck window, stale packet loop) or by the
-        // initial startReceive() at startup.  startReceive() on SX1278 returns
-        // RADIOLIB_ERR_UNSUPPORTED (-25) if called while already in RX mode.
         radio.standby();
         radio.implicitHeader(sizeof(BeaconPacket));
         int16_t rxSt = radio.startReceive();
@@ -636,7 +112,7 @@ static void nodeTdmaTask(void* /*params*/) {
         }
 
         int16_t len = rxWindow(buf, sizeof(buf), (uint32_t)remaining);
-        if (len <= 0) break;  // genuine timeout
+        if (len <= 0) break;
 
         isBeacon = (len == (int16_t)sizeof(BeaconPacket)) &&
                    pktReceiveBeacon(buf, (size_t)len, bcn) &&
@@ -648,136 +124,126 @@ static void nodeTdmaTask(void* /*params*/) {
       }
 
       if (isBeacon) {
-        beaconReceiveTime    = millis();
-        sfCount              = bcn.sfCount;
-        g_beaconRSSI         = (int8_t)radio.getRSSI();
-        s_lastBeaconEpoch    = bcn.epoch;
+        beaconReceiveTime = millis();
+        sfCount           = bcn.sfCount;
+        tdmaSetBeaconRSSI((int8_t)radio.getRSSI());
 
-        // Update schedule RTC (conditional - see dual clock design)
         rtcConditionalSync(bcn.hour, bcn.minute, bcn.second);
-
-        // Evaluate relay schedule
         evaluateSchedule();
 
         if (g_nodeRegistered) {
-          // Epoch mismatch means the gateway rebooted or reassigned slots since
-          // we joined.  Our slot bit may be set by a *different* device now, so
-          // the slotMask check alone is not sufficient -- re-contend to get a
-          // fresh slot assignment from the gateway.
-          if (bcn.epoch != s_joinEpoch) {
-            logAsync("[NODE-TDMA] Epoch changed (%d->%d) - re-registering\n",
-                     s_joinEpoch, bcn.epoch);
-            g_nodeRegistered = false;
-            g_nodeSlotId     = 0;
-            s_joinEpoch      = 0xFF;
-            state = ST_CONTENDING;
-            s_tdmaLedMode = LED_MODE_CONTENDING;
-          } else if (bcn.slotMask & (1u << (g_nodeSlotId - 1))) {
-            // Slot still ours in this epoch
-            state = ST_REGISTERED;
-            s_tdmaLedMode = LED_MODE_REGISTERED;
-          } else {
-            // Gateway explicitly dropped our slot
-            g_nodeRegistered = false;
-            g_nodeSlotId     = 0;
-            s_joinEpoch      = 0xFF;
-            state = ST_CONTENDING;
-            s_tdmaLedMode = LED_MODE_CONTENDING;
+          if (bcn.epoch != (uint8_t)(sfCount & 0xFF)) { // s_joinEpoch comparison kept local
+            // epoch check uses local variable -- see s_joinEpoch below
           }
-        } else {
-          state = ST_CONTENDING;
-          s_tdmaLedMode = LED_MODE_CONTENDING;
         }
 
+        // epoch / slot mask checks handled below via local s_joinEpoch
       } else if (state != ST_LISTEN) {
-        // Missed beacon - go back to basic listen mode
         logAsync("[NODE-TDMA] Beacon timeout - re-listening\n");
         state = ST_LISTEN;
-        if (!g_nodeRegistered) s_tdmaLedMode = LED_MODE_LISTEN;
+        if (!g_nodeRegistered) tdmaSetLedMode(LED_MODE_LISTEN);
         continue;
       } else {
-        // Still in initial LISTEN and no beacon yet - retry
         logAsync("[NODE-TDMA] No beacon heard - listening...\n");
         continue;
       }
-    }
 
-    // -- CONTENDING: transmit join request in contention window -----------
-    if (state == ST_CONTENDING) {
-      // Same sfStart compensation as txTime -- beacon on-air shifts beaconReceiveTime.
-      uint32_t cwStart = beaconReceiveTime
-                             + (BEACON_MS - BEACON_AIR_MS)
-                             + (uint32_t)MAX_NODES * SLOT_PAIR_MS;
+      // Process beacon fields (epoch / slot mask) via local state
+      // s_joinEpoch and s_lastBeaconEpoch are local to this task because
+      // they are only ever read/written from this single task function.
+      static uint8_t s_joinEpoch       = 0xFF;
+      static uint8_t s_lastBeaconEpoch = 0xFF;
 
-      waitUntilMs(cwStart);
+      s_lastBeaconEpoch = bcn.epoch;
 
-      // Random backoff to reduce collision probability.
-      // Max = CONTENTION_UL_MS - JoinRequest_air_time - margin = 60 - 16 - 5 = 39 ms.
-      vTaskDelay((halRandom() % 25) / portTICK_PERIOD_MS);
-
-      JoinRequestPacket req;
-      req.pktType   = PKT_JOIN_REQUEST;
-      req.uid_lo    = (uint8_t)(g_nodeUID & 0xFF);
-      req.uid_hi    = (uint8_t)(g_nodeUID >> 8);
-      req.fwVersion = FW_VERSION;
-
-      radio.setFrequency(LORA_CHANNELS[0]);
-      uint8_t joinBuf[sizeof(JoinRequestPacket)];
-      memcpy(joinBuf, &req, sizeof(req));
-      pktEncrypt(joinBuf, sizeof(joinBuf), sfCount, 0, PKT_DIR_JOIN_RQ);
-      int16_t joinTxSt = radio.transmit(joinBuf, sizeof(joinBuf));
-      if (joinTxSt != RADIOLIB_ERR_NONE) {
-        logAsync("[NODE-JOIN] TX failed %d\n", joinTxSt);
-      } else {
-        logAsync("[NODE-JOIN] Sent JoinReq UID=0x%04X\n", g_nodeUID);
-      }
-
-      // Listen for ACK during contention DL window
-      radio.implicitHeader(sizeof(JoinAckPacket));
-      radio.startReceive();
-      uint8_t ackBuf[8];
-      uint32_t ackDeadline = cwStart + CONTENTION_UL_MS + CONTENTION_DL_MS;
-      int16_t  ackLen      = rxWindow(ackBuf, sizeof(ackBuf),
-                      ackDeadline - millis());
-
-      JoinAckPacket ack;
-      if (ackLen == (int16_t)sizeof(JoinAckPacket) &&
-          pktReceive(ackBuf, (size_t)ackLen, ack, sfCount, 0, PKT_DIR_JOIN_AK) &&
-          ack.pktType == PKT_JOIN_ACK) {
-        uint16_t echoed = ((uint16_t)ack.uid_hi << 8) | ack.uid_lo;
-
-        if (echoed == g_nodeUID && ack.slotId >= 1 && ack.slotId <= MAX_NODES) {
-          g_nodeSlotId     = ack.slotId;
-          g_nodeRegistered = true;
-          s_joinEpoch      = s_lastBeaconEpoch;
-          logAsync("[NODE-JOIN] Registered! slotId=%d epoch=%d\n", g_nodeSlotId, s_joinEpoch);
-          // Fall through to REGISTERED processing on next iteration
-          state = ST_LISTEN;  // re-sync with next beacon before first TX
-          continue;
+      if (g_nodeRegistered) {
+        if (bcn.epoch != s_joinEpoch) {
+          logAsync("[NODE-TDMA] Epoch changed (%d->%d) - re-registering\n",
+                   s_joinEpoch, bcn.epoch);
+          g_nodeRegistered = false;
+          g_nodeSlotId     = 0;
+          s_joinEpoch      = 0xFF;
+          state = ST_CONTENDING;
+          tdmaSetLedMode(LED_MODE_CONTENDING);
+        } else if (bcn.slotMask & (1u << (g_nodeSlotId - 1))) {
+          state = ST_REGISTERED;
+          tdmaSetLedMode(LED_MODE_REGISTERED);
+        } else {
+          g_nodeRegistered = false;
+          g_nodeSlotId     = 0;
+          s_joinEpoch      = 0xFF;
+          state = ST_CONTENDING;
+          tdmaSetLedMode(LED_MODE_CONTENDING);
         }
+      } else {
+        state = ST_CONTENDING;
+        tdmaSetLedMode(LED_MODE_CONTENDING);
       }
 
-      // No ACK or UID mismatch (collision) - retry next superframe
-      logAsync("[NODE-JOIN] No ACK - retrying next superframe\n");
-      state = ST_LISTEN;
-      s_tdmaLedMode = LED_MODE_LISTEN;
-      continue;
+      // -- CONTENDING --------------------------------------------------------
+      if (state == ST_CONTENDING) {
+        uint32_t cwStart = beaconReceiveTime
+                           + (BEACON_MS - BEACON_AIR_MS)
+                           + (uint32_t)MAX_NODES * SLOT_PAIR_MS;
+
+        waitUntilMs(cwStart);
+        vTaskDelay((halRandom() % 25) / portTICK_PERIOD_MS);
+
+        JoinRequestPacket req;
+        req.pktType   = PKT_JOIN_REQUEST;
+        req.uid_lo    = (uint8_t)(g_nodeUID & 0xFF);
+        req.uid_hi    = (uint8_t)(g_nodeUID >> 8);
+        req.fwVersion = FW_VERSION;
+
+        radio.setFrequency(LORA_CHANNELS[0]);
+        uint8_t joinBuf[sizeof(JoinRequestPacket)];
+        memcpy(joinBuf, &req, sizeof(req));
+        pktEncrypt(joinBuf, sizeof(joinBuf), sfCount, 0, PKT_DIR_JOIN_RQ);
+        int16_t joinTxSt = radio.transmit(joinBuf, sizeof(joinBuf));
+        if (joinTxSt != RADIOLIB_ERR_NONE) {
+          logAsync("[NODE-JOIN] TX failed %d\n", joinTxSt);
+        } else {
+          logAsync("[NODE-JOIN] Sent JoinReq UID=0x%04X\n", g_nodeUID);
+        }
+
+        radio.implicitHeader(sizeof(JoinAckPacket));
+        radio.startReceive();
+        uint8_t ackBuf[8];
+        uint32_t ackDeadline = cwStart + CONTENTION_UL_MS + CONTENTION_DL_MS;
+        int16_t  ackLen      = rxWindow(ackBuf, sizeof(ackBuf),
+                                        ackDeadline - millis());
+
+        JoinAckPacket ack;
+        if (ackLen == (int16_t)sizeof(JoinAckPacket) &&
+            pktReceive(ackBuf, (size_t)ackLen, ack, sfCount, 0, PKT_DIR_JOIN_AK) &&
+            ack.pktType == PKT_JOIN_ACK) {
+          uint16_t echoed = ((uint16_t)ack.uid_hi << 8) | ack.uid_lo;
+          if (echoed == g_nodeUID && ack.slotId >= 1 && ack.slotId <= MAX_NODES) {
+            g_nodeSlotId     = ack.slotId;
+            g_nodeRegistered = true;
+            s_joinEpoch      = s_lastBeaconEpoch;
+            logAsync("[NODE-JOIN] Registered! slotId=%d epoch=%d\n",
+                     g_nodeSlotId, s_joinEpoch);
+            state = ST_LISTEN;
+            continue;
+          }
+        }
+
+        logAsync("[NODE-JOIN] No ACK - retrying next superframe\n");
+        state = ST_LISTEN;
+        tdmaSetLedMode(LED_MODE_LISTEN);
+        continue;
+      }
     }
 
-    // -- REGISTERED: receive DL first (ghost check), then transmit UL -----
+    // -- REGISTERED ------------------------------------------------------------
     if (state == ST_REGISTERED) {
-      // Slot start anchored to gateway sfStart via beacon receive time.
-      // beaconReceiveTime ~= sfStart + BEACON_AIR_MS, so subtracting BEACON_AIR_MS
-      // recovers sfStart, then adding BEACON_MS reaches the slot-1 DL open time.
       uint8_t  ch      = hopChannel(sfCount, g_nodeSlotId);
       uint32_t dlStart = beaconReceiveTime
-                             + (BEACON_MS - BEACON_AIR_MS)
-                             + (uint32_t)(g_nodeSlotId - 1) * SLOT_PAIR_MS;
+                         + (BEACON_MS - BEACON_AIR_MS)
+                         + (uint32_t)(g_nodeSlotId - 1) * SLOT_PAIR_MS;
       uint32_t txTime  = dlStart + SLOT_DL_MS;
 
-      // -- DL receive window (first) ---------------------------------
-      // Hop to the correct channel and listen for the gateway DL.
-      // Gateway only transmits when a command is queued; idle slots produce no DL.
       waitUntilMs(dlStart);
       radio.setFrequency(LORA_CHANNELS[ch]);
       delayMicroseconds(PHASE_GUARD_US);
@@ -791,162 +257,32 @@ static void nodeTdmaTask(void* /*params*/) {
         handleDownlink(dlBuf, dlLen);
       }
 
-      // If handleDownlink() detected a UID mismatch it cleared g_nodeRegistered.
-      // Skip the UL and re-enter contention immediately (no false UL from ghost).
       if (!g_nodeRegistered) {
         state = ST_LISTEN;
         continue;
       }
 
-      // -- UL transmit window (second) -------------------------------
-      // PZEM task refreshes g_pzem continuously every ~500 ms on Core 0;
-      // data is always current by the time we reach here.
-      // Channel is already set from the DL RX window above; no setFrequency needed.
       waitUntilMs(txTime);
       transmitTelemetry(sfCount);
-
       waitUntilMs(txTime + SLOT_UL_MS + SLOT_GUARD_MS);
 
-      // -- Idle window: GFSK bulk exchange if a grant was received ----------
-      if (s_bulkGrantReceived && s_bulkReady) {
-        // Derive idle phase start from beacon receive time (mirrors gateway Zone 4).
-        uint32_t bulkStart = beaconReceiveTime
-                             + (BEACON_MS - BEACON_AIR_MS)
-                             + (uint32_t)MAX_NODES * SLOT_PAIR_MS
-                             + CONTENTION_UL_MS + CONTENTION_DL_MS
-                             + BULK_MAINT_MS + BULK_SWITCH_MS;
-        waitUntilMs(bulkStart);
-
-        radio.standby();
-        int16_t fst = radio.beginFSK(GFSK_FREQUENCY, GFSK_BITRATE, GFSK_DEVIATION,
-                                      GFSK_RX_BANDWIDTH, GFSK_TX_POWER,
-                                      GFSK_PREAMBLE_LEN, false);
-        if (fst == RADIOLIB_ERR_NONE) {
-          radio.setSyncWord(const_cast<uint8_t*>(GFSK_SYNC_WORD), sizeof(GFSK_SYNC_WORD));
-          radio.setCRC(2);
-          if (s_bulkDir == 0) nodeRunBulkReceive(sfCount);
-          else                nodeRunBulkSend(sfCount);
-        } else {
-          logAsync("[NODE-BULK] GFSK init err %d\n", fst);
-        }
-
-        // Restore LoRa
-        radio.standby();
-        int16_t lrst = radio.begin(LORA_FREQUENCY, LORA_BANDWIDTH, LORA_SF, LORA_CR,
-                                    LORA_SYNC_WORD, LORA_TX_POWER, LORA_PREAMBLE_LEN);
-        if (lrst != RADIOLIB_ERR_NONE) logAsync("[NODE-BULK] LoRa restore err %d\n", lrst);
-        radio.setCRC(true);
-        radio.setFrequency(LORA_CHANNELS[0]);
-
-        s_bulkGrantReceived = false;
-        s_bulkReady         = false;
+      if (tdmaHasBulkPending()) {
+        tdmaRunBulkIdle(sfCount, beaconReceiveTime);
+        // task-based: no DIO callback re-attachment needed
       }
 
-      // Re-enter LISTEN to sync with next beacon
       state = ST_LISTEN;
     }
   }
 }
 
-// -----------------------------------------------------------------------------
-// PZEM sampling task (Core 0, priority 1)
-// Continuously reads all PZEM registers every ~500 ms.
-// Stores results in g_pzem under g_pzemMutex.
-// -----------------------------------------------------------------------------
-#ifndef PZEM_FAKE
-static void pzemTask(void* /*params*/) {
-  Serial.println("[PZEM] Sampling task started on Core 0");
-
-  while (true) {
-    float v  = pzem.voltage();
-    float i  = pzem.current();
-    float p  = pzem.power();
-    float e  = pzem.energy();      // Library returns Wh (raw register value)
-    float f  = pzem.frequency();
-    float pf = pzem.pf();
-
-    bool valid = !isnan(v) && !isnan(i) && !isnan(p) && !isnan(f);
-
-    if (valid) {
-      if (xSemaphoreTake(g_pzemMutex, pdMS_TO_TICKS(50)) == pdTRUE) {
-        g_pzem.voltage     = v;
-        g_pzem.current     = i;
-        g_pzem.power       = p;
-        g_pzem.energy      = isnan(e) ? g_pzem.energy : (uint32_t)e;
-        g_pzem.frequency   = f;
-        g_pzem.powerFactor = isnan(pf) ? 0.0f : pf;
-        g_pzem.valid       = true;
-        g_pzem.readAt      = millis();
-        xSemaphoreGive(g_pzemMutex);
-      }
-    } else {
-      // PZEM read error - log and continue with cached values
-      static uint32_t lastErrorLog = 0;
-      if (millis() - lastErrorLog > 5000) {
-        Serial.println("[PZEM] Read error - check wiring/baud");
-        lastErrorLog = millis();
-      }
-    }
-
-    // -- Pending threshold write -----------------------------------------
-    // The TDMA task cannot safely touch Serial2 (races with read transactions).
-    // It sets hasPendingThreshold under g_pzemMutex; we consume it here as
-    // the sole bus owner, using the library's setPowerAlarm().
-    bool doThreshold = false;
-    uint16_t threshWatts = 0;
-    if (xSemaphoreTake(g_pzemMutex, pdMS_TO_TICKS(50)) == pdTRUE) {
-      if (g_pzem.hasPendingThreshold) {
-        doThreshold                = true;
-        threshWatts                = g_pzem.pendingThresholdW;
-        g_pzem.hasPendingThreshold = false;
-      }
-      xSemaphoreGive(g_pzemMutex);
-    }
-    if (doThreshold) {
-      bool ok = pzem.setPowerAlarm(threshWatts);
-      Serial.printf("[PZEM] Alarm threshold -> %d W (%s)\n",
-                          threshWatts, ok ? "OK" : "FAIL");
-    }
-
-    vTaskDelay(500 / portTICK_PERIOD_MS);
-  }
-}
-#endif // !PZEM_FAKE
-
-// -----------------------------------------------------------------------------
-// Schedule evaluation periodic task (Core 0, low frequency)
-// Evaluates relay schedule every 10 s so the TDMA task doesn't have to.
-// -----------------------------------------------------------------------------
-static void schedTask(void* /*params*/) {
-  while (true) {
-    evaluateSchedule();
-    vTaskDelay(10000 / portTICK_PERIOD_MS);
-  }
-}
-
-// -----------------------------------------------------------------------------
+// =============================================================================
 // Task launcher
-// -----------------------------------------------------------------------------
+// =============================================================================
+
 void nodeTdmaTaskStart() {
-  g_pzemMutex = xSemaphoreCreateMutex();
-  configASSERT(g_pzemMutex);
-
-  g_nodeUID = computeDeviceUID();
-  Serial.printf("[NODE] Device UID = 0x%04X\n", g_nodeUID);
-
-  // PZEM sampling - Core 0, priority 1 (below WiFi if present)
-#ifdef PZEM_FAKE
-  halTaskCreatePinned(fakePzemTask, "PZEM", 4096, nullptr, 1, HAL_CORE_0, nullptr);
-#else
-  halTaskCreatePinned(pzemTask,     "PZEM", 4096, nullptr, 1, HAL_CORE_0, nullptr);
-#endif
-
-  // Schedule evaluator - Core 0, very low priority
-  halTaskCreatePinned(schedTask, "SCHED", 2048, nullptr, 1, HAL_CORE_0, nullptr);
-
-  // LED state + nudge task - Core 0, priority 1; drives two-color state LED
-  halTaskCreatePinned(ledTask, "LED", 2048, nullptr, 1, HAL_CORE_0, &s_ledTaskHandle);
-
-  // TDMA radio task - Core 1, priority 2
+  nodeTdmaStartCommonTasks();
   halTaskCreatePinned(nodeTdmaTask, "NODE_TDMA", 8192, nullptr, 2, HAL_CORE_1, nullptr);
 }
+
+#endif // TDMA_IRQ_DRIVEN
