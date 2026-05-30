@@ -1,0 +1,1122 @@
+%% ============================================================
+%%  IEEE Conference Proposal Paper
+%%  Compile: pdflatex proposal.tex  (twice for cross-references)
+%%  Class: IEEEtran (conference mode, two-column)
+%% ============================================================
+
+\documentclass[conference]{IEEEtran}
+\IEEEoverridecommandlockouts
+
+%% --- Packages ---
+\usepackage{cite}
+\usepackage{amsmath,amssymb,amsfonts}
+\usepackage{algorithmic}
+\usepackage{graphicx}
+\usepackage{textcomp}
+\usepackage{xcolor}
+\usepackage{booktabs}
+\usepackage{multirow}
+\usepackage{url}
+\usepackage{hyperref}
+\usepackage{siunitx}
+\sisetup{detect-all, per-mode=symbol}
+
+\def\BibTeX{{\rm B\kern-.05em{\sc i\kern-.025em b}\kern-.08em
+    T\kern-.1667em\lower.7ex\hbox{E}\kern-.125emX}}
+
+%% ============================================================
+\begin{document}
+
+\title{Design of a Distributed LoRa-TDMA Power Telemetry Network
+       with On-Node AC Load Classification and a Precision Analog
+       Front-End for Residential Energy Monitoring}
+
+\author{%
+  \IEEEauthorblockN{L.\ A.\ Garol}
+  \IEEEauthorblockA{\textit{College of Engineering} \\
+    \textit{University of Mindanao} \\
+    Davao City, Philippines \\
+    l.garol.545854@umindanao.edu.ph}
+}
+
+\maketitle
+
+%% ============================================================
+\begin{abstract}
+Residential electricity consumption in the Philippines remains poorly
+characterised at the appliance level.\ Commercially available smart
+meters provide aggregate kWh totals but offer no per-outlet load
+identification or real-time waveform data, limiting both consumer
+awareness and demand-side management programmes.\ This paper proposes
+a multi-node wireless power telemetry system that addresses these gaps
+through three integrated contributions.\ First, a precision analog
+front-end based on the ADS131M02 24-bit simultaneous-sampling
+delta-sigma ADC, a ZMPT101B galvanically isolated voltage transformer,
+and a salvaged toroidal current transformer (CT) replaces the
+commodity PZEM-004T v3 module.\ The new front-end provides
+simultaneous voltage and current sampling at 4~kSPS with programmable
+gain (G\,=\,1 to 128), full galvanic isolation from the AC mains, and
+sufficient bandwidth for harmonic analysis up to the 15th order.\ Second, an
+STM32F411 Cortex-M4F sensor node performs on-device harmonic feature
+extraction via a 128-point FFT and classifies connected loads into six
+residential categories---resistive, capacitive, single-phase motor,
+fan, switched-mode power supply, and lighting---using a deterministic
+decision tree with an upgradeable TFLite Micro multilayer perceptron
+(MLP).\ Third, an ESP32-S3 gateway coordinates up to eight sensor
+nodes through a frequency-hopping TDMA LoRa protocol with AES-128 CTR
+packet encryption, hosts a web-based single-page application (SPA)
+dashboard over Wi-Fi, and persists 120-point telemetry histories in
+ferroelectric RAM (FRAM).\ A GFSK bulk transfer extension enables
+over-the-air deployment of updated classifier models and calibration
+coefficient blocks within the existing superframe structure.\ The
+proposed system targets \(\le 0.5\%\) metering accuracy, \(\ge 85\%\)
+classification accuracy across all six load categories, and
+\(\ge 99\%\) uplink packet delivery ratio under residential indoor
+conditions.
+\end{abstract}
+
+\begin{IEEEkeywords}
+LoRa, TDMA, load classification, non-intrusive load monitoring,
+ADS131M02, power quality, harmonic analysis, IoT, embedded machine
+learning, smart metering
+\end{IEEEkeywords}
+
+%% ============================================================
+\section{Introduction}
+\label{sec:intro}
+
+The residential sector accounts for a substantial and growing fraction
+of national electricity consumption in the Philippines, yet the
+granularity of available energy data remains coarse.\ Standard
+electromechanical and electronic energy meters report only aggregate
+kilowatt-hour totals, providing neither the per-outlet visibility
+needed for occupant feedback nor the appliance-level signatures
+required for automated demand management.\ Non-intrusive load
+monitoring (NILM) techniques \cite{hart_nilm_1992} can, in principle,
+disaggregate whole-house consumption into per-appliance contributions
+from a single metering point, but whole-house NILM requires
+significant signal processing resources and yields lower accuracy when
+many loads operate concurrently \cite{zeifman_nilm_review_2011}.\ An
+alternative approach---monitoring individual branch circuits or
+outlets with networked smart plugs---trades installation complexity for
+classification accuracy, since each measurement point sees at most a
+few loads simultaneously.
+
+Existing low-cost smart plug implementations typically rely on
+purpose-built power metering ICs such as the PZEM-004T v3, which
+integrates voltage sensing, current sensing, and RMS computation on a
+single module.\ While sufficient for energy auditing, these modules
+offer no access to the raw voltage or current waveform, precluding
+harmonic analysis and thereby ruling out any feature-based load
+classification.\ Replacing such a module with a discrete analog
+front-end and a high-resolution simultaneous-sampling ADC restores
+full waveform access at the cost of additional circuit complexity.
+
+Long-range low-power wireless connectivity is a second challenge for
+multi-point metering.\ Wi-Fi and Bluetooth are well-supported in the
+Arduino and ESP-IDF ecosystems but impose high standby power and, for
+Wi-Fi, require AP association with its associated latency and join
+overhead.\ LoRa (Long Range), a chirp-spread-spectrum physical layer
+operating in unlicensed ISM bands, achieves kilometre-scale range at
+milliwatt transmit power and is increasingly used in sub-GHz IoT
+deployments \cite{augustin_lora_sensors_2016}.\ A structured
+medium-access control layer is required, however, to coordinate
+multiple nodes without collision; frequency-division and
+time-division multiple access (TDMA) schemes have been demonstrated to
+be effective for deterministic, low-latency sensor networks
+\cite{raza_lpwan_survey_2017}.
+
+Security is a practical concern for metering infrastructure.\ An
+unencrypted LoRa broadcast reveals occupancy patterns, appliance usage
+schedules, and potentially security-relevant information (vacation
+periods, nighttime routines).\ AES-128 in counter (CTR) mode provides
+a lightweight, nonce-based stream cipher that is compatible with
+embedded C++ without dynamic memory allocation and is recommended by
+NIST \cite{nist_sp800_38a}.
+
+This paper proposes a system that integrates all three of these
+requirements: precision analog measurement, structured wireless MAC,
+and load classification---within a hardware/firmware architecture that
+is practical to build and deploy in a Philippine residential setting.
+
+\subsection{Objectives}
+\label{ssec:objectives}
+
+The specific objectives of this research are:
+
+\begin{enumerate}
+  \item Design and prototype a precision analog front-end using the
+        ADS131M02 24-bit simultaneous-sampling ADC with a ZMPT101B
+        isolated voltage transformer and a toroidal CT, targeting
+        \(\le 0.5\%\) metering accuracy and full galvanic isolation from
+        the AC mains.
+
+  \item Implement a TDMA LoRa communication protocol with
+        frequency-hopping channel access, AES-128 CTR packet
+        encryption, and a GFSK bulk transfer extension for
+        over-the-air model and calibration deployment.
+
+  \item Develop an on-node harmonic feature extraction pipeline using
+        a 128-point FFT and derive a 10-dimensional feature vector
+        for load identification without transmitting raw waveform data.
+
+  \item Implement and evaluate a two-stage on-node load classifier: a
+        deterministic decision tree for immediate deployment and a
+        compact TFLite Micro MLP trained on collected field data,
+        targeting \(\ge 85\%\) accuracy across six residential load
+        categories.
+
+  \item Develop an ESP32-S3 gateway with a web-based SPA dashboard
+        for real-time visualization, remote relay control, persistent
+        energy history via FRAM, and over-the-air classifier
+        management.
+
+  \item Validate the integrated system against reference measurements,
+        characterizing metering accuracy, classification accuracy, and
+        uplink packet delivery ratio under realistic residential
+        conditions.
+\end{enumerate}
+
+\subsection{Scope and Limitations}
+\label{ssec:scope}
+
+The system targets single-phase 220~V / 60~Hz residential loads of up
+to 30~A per monitored outlet.\ Gateway-to-internet connectivity
+(cloud backhaul) is out of scope; the dashboard is self-hosted on the
+gateway node.\ Load disaggregation of mixed-load outlets is not
+addressed.\ The analogue front-end is designed for indoor perfboard
+prototype construction; PCB layout and EMC compliance are deferred.
+
+%% ============================================================
+\section{Related Work}
+\label{sec:related}
+
+\subsection{Non-Intrusive Load Monitoring and Load Classification}
+
+Hart's foundational work \cite{hart_nilm_1992} established the
+framework for identifying appliances from changes in steady-state
+current and power at a single metering point.\ The approach works well
+for stepwise loads but struggles with variable-speed drives and
+modern switched-mode supplies.\ Subsequent work extended feature sets
+to include harmonic content \cite{wichakool_harmonic_loads_2009},
+transient event detection, and V-I trajectory analysis
+\cite{lam_vI_trajectory_2007}.\ Zeifman and Roth
+\cite{zeifman_nilm_review_2011} survey the state of the art and
+identify harmonic-ratio features as among the most discriminative for
+residential load types.
+
+Data-driven approaches have gained traction as labelled datasets
+became available.\ Kolter and Johnson \cite{kolter_redd_2011}
+released the REDD dataset and demonstrated that hidden Markov models
+can exceed the accuracy of threshold-based disaggregation.\ Kelly and
+Knottenbelt \cite{kelly_neural_nilm_2015} applied recurrent neural
+networks directly to raw power traces, achieving state-of-the-art
+disaggregation on the UK-DALE dataset.\ For per-outlet classification
+(as opposed to whole-house disaggregation), the classification problem
+is considerably simpler because each metering point typically
+serves one or a few loads; hand-crafted feature-based classifiers
+have been shown to reach \(>90\%\) accuracy in this setting
+\cite{parson_unsupervised_nilm_2012}.
+
+The proposed system adopts a hybrid approach: a deterministic
+decision tree provides immediate classification without training data,
+while a compact MLP---deployed via OTA after supervised data
+collection---improves accuracy on atypical or region-specific loads.
+
+\subsection{Precision Power Measurement with Sigma-Delta ADCs}
+
+High-resolution simultaneous-sampling ADCs have become the preferred
+architecture for precision power quality instruments.\ The ADS131M02
+(Texas Instruments) \cite{ti_ads131m02_ds} is a 24-bit, dual-channel,
+simultaneously sampling delta-sigma ADC with an on-chip PGA (gain
+1--128) and a sinc3 decimation filter, delivering 18--20 effective
+bits at output data rates of 1--32~kSPS.\ The simultaneous sampling
+architecture eliminates the phase skew inherent in multiplexed ADCs,
+which is critical for accurate reactive-power and power-factor
+measurement.
+
+Several precision metering IC designs reported in the literature use
+this class of ADC.\ Adamo et al.\ \cite{adamo_power_quality_2011}
+describe a power quality monitor based on a 16-bit simultaneous ADC,
+demonstrating that waveform-based harmonic analysis is practical in
+embedded systems.\ The ZMPT101B miniature current-mode voltage
+transformer provides 4~kV galvanic isolation from the AC mains with
+less than 20 arcminutes of phase error at the rated operating current,
+making it a cost-effective alternative to resistive dividers for safe
+isolated voltage sensing \cite{zmpt101b_datasheet}.
+
+\subsection{LoRa and LPWAN for IoT Sensing}
+
+LoRa modulation, developed by Semtech \cite{semtech_sx1278_ds}, uses
+chirp spread spectrum (CSS) over configurable spreading factors (SF6
+to SF12), trading data rate for link margin.\ At SF6 the air-time
+for a 32-byte packet is approximately 10--15~ms with \(\sim 10\)~dB
+less processing gain than SF12; this is appropriate for TDMA
+networks where short slot durations are required.\ Augustin et al.\
+\cite{augustin_lora_sensors_2016} characterise LoRa coverage in urban
+and indoor environments, confirming reliable indoor coverage at 20--30~m
+through multiple concrete walls at SF6 with 10~dBm transmit power.
+
+TDMA-based MAC layers for LoRa have been proposed to overcome the
+collision-prone LoRaWAN ALOHA-like access scheme.\ Bor et al.\
+\cite{bor_lorawan_scale_2016} show that LoRaWAN does not scale beyond
+a few hundred devices in dense deployments, motivating structured MAC
+protocols for high-density or latency-sensitive applications.\ Frequency
+hopping across multiple channels increases resilience against
+narrowband interference and partial-band fading \cite{raza_lpwan_survey_2017}.
+
+\subsection{Embedded Machine Learning for IoT}
+
+The TFLite Micro runtime \cite{david_tflite_micro_2021} enables
+inference from quantised TensorFlow Lite models on microcontrollers
+with as little as 16~kB of RAM.\ Warden and Situnayake
+\cite{warden_tinyml_2019} survey the domain and demonstrate that small
+(hundreds of parameters) multilayer perceptrons achieve adequate
+accuracy for many IoT classification tasks while executing in under
+1~ms on Cortex-M4 processors.\ The ARM CMSIS-DSP library
+\cite{arm_cmsis_dsp} provides optimised FFT and vector operations for
+Cortex-M processors, enabling efficient feature extraction without
+hand-tuned assembly.
+
+\subsection{Security in LoRa IoT Networks}
+
+LoRaWAN mandates AES-128 for join-request authentication and
+payload encryption, demonstrating that AES is a practical security
+primitive for constrained IoT devices \cite{lorawan_spec}.\ NIST
+SP~800-38A \cite{nist_sp800_38a} defines CTR mode, which converts a
+block cipher into a stream cipher suitable for variable-length packets
+and allows parallelised encryption without IV re-use if the nonce is
+unique per packet.\ Hardware RFID-based key provisioning, as studied
+by Hancke and Kuhn \cite{hancke_rfid_security_2005}, provides a
+physical-world complement to over-the-air key distribution.
+
+%% ============================================================
+\section{System Architecture}
+\label{sec:arch}
+
+Fig.\ \ref{fig:arch} illustrates the proposed system.\ Two hardware
+roles share a single firmware codebase compiled under different
+PlatformIO build environments.
+
+\begin{figure}[t]
+  \centering
+  %% Replace with actual figure:
+  %% \includegraphics[width=\columnwidth]{figs/system_arch.pdf}
+  \framebox{\parbox{\columnwidth}{\centering
+    \vspace{2cm}
+    [System Architecture Diagram]\\
+    Gateway (ESP32-S3) $\leftarrow$ LoRa TDMA $\rightarrow$ Nodes $\times$8
+    (STM32F411 + ADS131M02)\\
+    Gateway $\leftarrow$ Wi-Fi $\rightarrow$ Web Dashboard
+    \vspace{2cm}
+  }}
+  \caption{Proposed system architecture.\ The ESP32-S3 gateway acts
+    as the TDMA master and Wi-Fi access point.\ Up to eight
+    STM32F411 sensor nodes report simultaneously sampled voltage and
+    current waveforms and classified load types every 3~s superframe.}
+  \label{fig:arch}
+\end{figure}
+
+\textbf{Gateway (ESP32-S3):} The gateway is built on the Espressif
+ESP32-S3 SoC (Xtensa LX7 dual-core at 240~MHz, 512~kB SRAM).\ It
+acts as the TDMA master, transmitting a beacon at the start of each
+3~s superframe and allocating uplink/downlink slots to registered
+nodes.\ A Wi-Fi STA/AP interface serves the management dashboard.\ An
+MB85RC256V 32~kB FRAM chip (I\textsuperscript{2}C, 0x50) persists
+per-node energy accumulators and 120-point telemetry histories across
+reboots.\ An optional PN532 NFC reader supports hardware-based AES key
+provisioning in encrypted builds.
+
+\textbf{Sensor Nodes (STM32F411):} Each sensor node uses the
+STMicroelectronics STM32F411 ``Black Pill'' (ARM Cortex-M4F at
+100~MHz, 128~kB SRAM).\ The node samples the AC mains via the custom
+analog front-end (Section~\ref{ssec:afe}), runs the on-node load
+classifier (Section~\ref{ssec:classifier}), controls a relay for
+switched load management, and transmits a 32-byte telemetry packet in
+its assigned TDMA uplink slot.
+
+\textbf{Radio Subsystem:} Both gateway and nodes use the Semtech
+SX1278 LoRa transceiver connected via SPI.\ The gateway uses the
+standard ESP32-S3 FSPI peripheral; the nodes use STM32 SPI1 for the
+ADS131M02 ADC and SPI2 for the SX1278.\ The RadioLib library
+\cite{radiolib} abstracts low-level transceiver control.
+
+%% ============================================================
+\section{Methodology}
+\label{sec:method}
+
+\subsection{Analog Front-End Design}
+\label{ssec:afe}
+
+\subsubsection{Current Channel}
+
+The current channel uses the CT bundled with the PZEM-004T module---a
+solid-core toroidal transformer with a 1:1000 turns ratio and
+100~A primary rating.\ The CT secondary drives a split burden resistor
+(\(2 \times 5\,\Omega\), 0.1\%, 15~ppm/\textdegree C metal film),
+whose center tap is connected to AGND.\ This balanced configuration
+eliminates even-order distortion in the ADC input stage.
+
+At the 30~A target load, the peak burden voltage is:
+\begin{equation}
+  V_{b,\text{pk}} = \frac{I_{\max}\sqrt{2}}{n} \cdot R_b
+                  = \frac{30\sqrt{2}}{1000} \times 10 = 0.424\,\text{V},
+  \label{eq:burden_v}
+\end{equation}
+corresponding to 70.7\% of the ADS131M02 full-scale range at PGA
+gain \(G = 2\) (\(\pm 0.6\)~V).\ The clipping threshold at \(G = 2\)
+is 42.4~A RMS, accommodating steady-state residential loads; motor
+inrush transients up to 84.9~A RMS are captured by switching to
+\(G = 1\) in firmware.\ The noise-limited current resolution at
+4~kSPS (\(G = 2\), \(e_n \approx 3.5\,\mu\text{V}\)) is:
+\begin{equation}
+  \Delta I_{p} = \frac{e_n}{R_b} \cdot n
+               = \frac{3.5 \times 10^{-6}}{10} \times 1000
+               = 0.35\,\text{mA},
+  \label{eq:i_resolution}
+\end{equation}
+yielding a dynamic range of approximately 60\,000:1, far exceeding the
+5\,000:1 design target.
+
+\subsubsection{Voltage Channel}
+
+The ZMPT101B miniature current-mode voltage transformer (1:1 ratio,
+4~kV isolation) senses the mains voltage.\ Two 56~k\(\Omega\) series
+resistors (\(R_L = 112\,\text{k}\Omega\) total) limit the primary
+operating current to 2~mA at 220~V RMS.\ The secondary current flows
+through a split sampling resistor (\(2 \times 160\,\Omega\), center
+tap to AGND), producing a peak differential output of 0.917~V at
+220~V RMS---76.4\% of the ADS131M02 full-scale at \(G = 1\).\ The
+ZMPT101B introduces a phase lag of \(\le 0.33^\circ\), characterised in
+\cite{zmpt101b_datasheet}.
+
+\subsubsection{Anti-Aliasing Filter and Phase Calibration}
+
+Both channels share an identical differential RC anti-aliasing filter:
+\(R_{\text{filt}} = 100\,\Omega\) on each line, \(C_{\text{diff}} =
+680\,\text{nF}\) C0G ceramic across the differential pair, giving:
+\begin{equation}
+  f_c = \frac{1}{2\pi R_{\text{filt}} C_{\text{diff}}}
+      = \frac{1}{2\pi \times 100 \times 680 \times 10^{-9}}
+      = 2341\,\text{Hz}.
+  \label{eq:filter_fc}
+\end{equation}
+Attenuation at the fundamental (60~Hz) is 0.003~dB; at the 15th
+harmonic (900~Hz) it is 0.59~dB---a systematic, known, and correctable
+gain error.\ Because both channels use identical filter components,
+the differential phase error contributed by the anti-aliasing filter
+is exactly zero \cite{ti_ads131m02_ds}; the ADS131M02's simultaneous
+sampling eliminates ADC-induced phase skew.\ Residual differential
+phase error from the ZMPT101B and CT transformers is corrected via the
+ADS131M02 on-chip PHASE register at a resolution of:
+\begin{equation}
+  \Delta\phi_{\text{step}} = 360^\circ \times f_{\text{mains}}
+                            \times \frac{1}{f_{\text{CLKIN}}}
+                           = 360 \times 60 \times \frac{1}{8.192 \times 10^6}
+                           \approx 0.00264^\circ.
+  \label{eq:phase_step}
+\end{equation}
+
+\subsubsection{PGA Gain-Ranging}
+
+Four gain states are defined in firmware (Table~\ref{tab:pga}).\ At
+each 60~Hz cycle boundary, the firmware checks whether the peak sample
+amplitude exceeds 90\% of the current FSR (switch to lower gain) or
+falls below 15\% (switch to higher gain).\ Gain transitions are
+applied via SPI register write and take effect on the next ADS131M02
+conversion.\ The strategy maintains high ADC utilisation across a
+5000:1 current range without increasing burden resistance.
+
+\begin{table}[t]
+  \caption{PGA Gain-Ranging States -- Current Channel}
+  \label{tab:pga}
+  \centering
+  \begin{tabular}{cccc}
+    \toprule
+    Gain & FSR ($\pm$V) & Clip (A RMS) & Noise Floor (mA) \\
+    \midrule
+    1  & 1.20 & 84.9 & 0.53 \\
+    2  & 0.60 & 42.4 & 0.35 \\
+    4  & 0.30 & 21.2 & 0.20 \\
+    16 & 0.075 & 5.3 & 0.095 \\
+    \bottomrule
+  \end{tabular}
+\end{table}
+
+\subsubsection{Firmware Integration on STM32F411}
+
+The ADS131M02 DRDY pin is connected to an EXTI interrupt (priority 0,
+highest).\ The ISR launches a DMA-driven SPI1 read of the 80-bit frame
+(status word, 24-bit Ch0, 24-bit Ch1, CRC-16).\ A DMA completion
+callback copies the two signed 24-bit samples into circular buffers,
+waking the \texttt{adcTask} (FreeRTOS, STM32duino) for per-sample
+accumulation.\ At 4~kSPS the total CPU load from ADC acquisition and
+per-sample arithmetic is approximately 2.2\%, leaving \(>97\%\) idle
+for the TDMA radio task and classifier.
+
+\subsection{TDMA Protocol and Wireless Communication}
+\label{ssec:tdma}
+
+\subsubsection{Superframe Structure}
+
+The network organises time into 3000~ms superframes (Fig.\
+\ref{fig:superframe}).\ Each superframe contains:
+\begin{itemize}
+  \item A 40~ms beacon (gateway \(\to\) all nodes) on Ch~0 at
+        SF6, 125~kHz BW.
+  \item Eight 165~ms data slots (DL 50~ms + UL 100~ms + 15~ms guard)
+        for eight registered nodes.
+  \item A 60~ms contention window (uplink) and a 40~ms contention
+        window (downlink) for unregistered nodes to join.
+  \item A 1520~ms idle window used for gateway maintenance and,
+        when a bulk transfer is active, a GFSK burst phase.
+  \item A 20~ms end guard before the next beacon.
+\end{itemize}
+
+\begin{figure}[t]
+  \centering
+  \framebox{\parbox{\columnwidth}{\centering
+    \vspace{1.5cm}
+    [Superframe timing diagram:\\
+    Beacon (40ms) | Slots 1-8 (8x165ms=1320ms) |\\
+    CW-UL (60ms) | CW-DL (40ms) | Idle (1520ms) | Guard (20ms)]
+    \vspace{1.5cm}
+  }}
+  \caption{TDMA superframe structure.\ The 1520~ms idle window is
+    normally quiescent but is repurposed for GFSK bulk data transfers
+    when a bulk session is active.}
+  \label{fig:superframe}
+\end{figure}
+
+Downlink-first slot ordering gives the gateway the opportunity to
+deliver commands (relay toggle, schedule, threshold) immediately
+before the node's uplink.\ The node's uplink slot timing is derived
+from the beacon receive timestamp:
+\begin{equation}
+  t_{\text{tx}} = t_{\text{bcn}} + (T_{\text{bcn}} - T_{\text{air}})
+                + (k-1) \cdot T_{\text{slot}} + T_{\text{DL}},
+  \label{eq:slot_time}
+\end{equation}
+where \(T_{\text{bcn}} = 40\,\text{ms}\), \(T_{\text{air}} =
+18\,\text{ms}\) (on-air time of the 8-byte beacon at SF6),
+\(T_{\text{slot}} = 165\,\text{ms}\), \(T_{\text{DL}} = 50\,\text{ms}\),
+and \(k\) is the node's assigned slot index (1--8).
+
+\subsubsection{Frequency Hopping}
+
+The SX1278 is configured with eight 200~kHz-spaced channels in the
+433~MHz ISM band (Ch~0 = 433.050~MHz, Ch~7 = 434.450~MHz).\ The
+active channel for each slot within a superframe is:
+\begin{equation}
+  \text{ch} = (\mathit{sfCount} \times 7 + k) \bmod 8,
+  \label{eq:freqhop}
+\end{equation}
+where \(\mathit{sfCount}\) is the superframe counter and the coprime
+multiplier 7 ensures that every slot visits all eight channels across
+eight consecutive superframes.\ Beacon and contention windows use
+Ch~0.\ The hopping sequence is deterministic and requires no explicit
+signalling.
+
+\subsubsection{Node Lifecycle and Network Epoch}
+
+Unregistered nodes transmit a \texttt{JoinRequest} (0xA0, 4~bytes)
+during the contention window.\ The gateway allocates the first
+available slot and replies with a \texttt{JoinAck} (0xA1, 4~bytes)
+containing the assigned slot index and the current network epoch.\ A
+uint8\_t epoch field in the beacon increments on every node eviction
+(which occurs only when all 8 slots are occupied and a node has missed
+8 consecutive superframes~\(\approx 24\)~s).\ A registered node that
+detects an epoch mismatch immediately re-contends rather than
+transmitting in a potentially reassigned slot.
+
+\subsubsection{Packet Encryption}
+
+When the \texttt{PKT\_ENCRYPTION} build flag is active, all
+uplink and downlink packets (excluding the plaintext \texttt{sfCount}
+bytes of the beacon) are encrypted in-place using AES-128 in CTR mode
+\cite{nist_sp800_38a}.\ The 16-byte nonce is constructed as:
+\begin{equation}
+  \text{nonce} = [\,\mathit{sfCount}_\text{lo} \mid
+                    \mathit{sfCount}_\text{hi} \mid
+                    \mathit{slotId} \mid
+                    \mathit{dir} \mid
+                    \mathbf{0}_{12}\,],
+  \label{eq:nonce}
+\end{equation}
+where \(\mathit{dir}\) is a per-packet-type direction discriminator
+byte.\ This guarantees a unique keystream block per (superframe,
+slot, direction) triple.\ The AES key is auto-generated by the gateway
+on first boot and provisioned to nodes via a PN532 I\textsuperscript{2}C
+NFC reader using MIFARE Classic sector~1 (Key~A 0xFF$\times$6) as
+described in \cite{hancke_rfid_security_2005}.
+
+\subsection{GFSK Bulk Transfer Extension}
+\label{ssec:gfsk}
+
+Several subsystems require payloads of 28--4096~bytes that cannot be
+delivered efficiently through the 7-byte downlink slot window: ADC
+calibration coefficient blocks (24~bytes), classifier threshold sets
+(28~bytes), quantised TFLite Micro MLP models (\(\approx 500\)~bytes),
+and training-data upload batches (2--4~kB).\ Delivering a 500-byte
+payload through the 7-byte DL window would require 72 superframes
+(216~s), which is impractical.
+
+The GFSK bulk transfer extension repurposes the 1520~ms idle window
+for a high-throughput GFSK burst, while leaving all eight TDMA data
+slots entirely undisturbed (Fig.\ \ref{fig:bulk}).\ The protocol is
+application-agnostic: it delivers an opaque byte buffer between the
+gateway and one target node per superframe.
+
+\begin{figure}[t]
+  \centering
+  \framebox{\parbox{\columnwidth}{\centering
+    \vspace{1.5cm}
+    [Bulk transfer timing diagram:\\
+    ...CW-DL (40ms) | Maint (20ms) | LoRa->GFSK | GFSK Burst |
+    GFSK->LoRa | Idle | Guard]
+    \vspace{1.5cm}
+  }}
+  \caption{GFSK bulk transfer phase within the idle window.\ TDMA data
+    slots and contention windows are completely unaffected.}
+  \label{fig:bulk}
+\end{figure}
+
+\subsubsection{Physical Layer}
+
+The SX1278 supports FSK/GFSK packet mode alongside LoRa through the
+\texttt{LongRangeMode} bit in \texttt{RegOpMode}.\ Mode switching
+requires a transition through Sleep mode and takes approximately
+0.5~ms.\ GFSK is configured at 100~kbps bit rate, 50~kHz frequency
+deviation (modulation index \(\beta = 1.0\)), 125~kHz single-sided RX
+bandwidth, BT~=~0.5 Gaussian filtering, and CRC-16/CCITT hardware
+error detection.\ At 100~kbps, a worst-case 4096-byte transfer
+(21 fragments of 200~bytes each) completes in approximately 462~ms,
+well within the 1476~ms usable bulk window.
+
+The indoor link budget at 433~MHz over 20~m through two concrete walls
+is estimated at 73~dB path loss.\ With 10~dBm transmit power and
+\(-104\)~dBm sensitivity at 100~kbps, the margin is 41~dB---adequate
+for body shadowing and transient fading \cite{augustin_lora_sensors_2016}.
+
+\subsubsection{Fragment Protocol}
+
+The bulk payload is segmented into 200-byte fragments, each
+encapsulated in a \texttt{BulkFragHeader} (pktType 0xB0, sequence
+number, fragment count, payload length) followed by the payload and a
+hardware CRC-16.\ A stop-and-wait ARQ scheme with a 50~ms ACK timeout
+and up to 3 retransmissions per fragment provides reliable delivery.
+An end-to-end CRC-32 over the complete reassembled payload detects
+any reassembly error that per-fragment CRC would miss.
+
+In encrypted builds, each fragment uses an extended nonce
+incorporating the fragment sequence number in byte 4, guaranteeing
+unique keystreams across fragments within a transfer and across
+retried transfers in different superframes:
+\begin{equation}
+  \text{nonce}_{\text{bulk}} = [\,\mathit{sfCount}_\text{lo} \mid
+                                   \mathit{sfCount}_\text{hi} \mid
+                                   \mathit{slotId} \mid
+                                   \mathit{dir} \mid
+                                   \mathit{seqNum} \mid
+                                   \mathbf{0}_{11}\,].
+  \label{eq:bulk_nonce}
+\end{equation}
+
+The gateway signals the start of a bulk session by inserting a
+6-byte \texttt{BulkGrantPacket} (pktType 0x08) into the target node's
+regular LoRa downlink slot.\ The node acknowledges readiness by
+setting bit~7 of the \texttt{statusFlags} byte in its subsequent
+uplink telemetry packet.\ If the gateway observes this flag, both
+sides simultaneously switch to GFSK at the computed bulk phase start
+time; otherwise, the grant is retried in the next superframe.
+
+\subsection{Feature Extraction and Load Classification}
+\label{ssec:classifier}
+
+\subsubsection{Feature Extraction Pipeline}
+
+Every 2~s (approximately 120 mains cycles at 60~Hz), the
+\texttt{adcTask} on the STM32F411 applies a 128-point FFT to the most
+recent current waveform samples.\ With \(f_s = 4000\,\text{SPS}\) and
+\(N = 128\), the FFT frequency resolution is:
+\begin{equation}
+  \Delta f = \frac{f_s}{N} = \frac{4000}{128} = 31.25\,\text{Hz}.
+  \label{eq:fft_res}
+\end{equation}
+The fundamental (60~Hz) maps to bin \(k_1 = 2\); odd harmonics up to
+the 15th (900~Hz) map to bins 2, 6, 10, 13, 17, 21, 25, 29.\ A Hann
+window reduces spectral leakage; since only magnitude ratios are used
+for classification, the 6~dB main-lobe broadening is acceptable.\ The
+anti-aliasing filter's known attenuation at each harmonic frequency is
+compensated by the inverse filter magnitude:
+\begin{equation}
+  |I_{h,\text{corr}}| = |I_h| \times \sqrt{1 + \left(\frac{h \cdot 60}{f_c}\right)^2}.
+  \label{eq:filt_correction}
+\end{equation}
+
+From the corrected harmonic magnitudes, a 10-dimensional feature vector
+\(\mathbf{x} = [f_0, \ldots, f_9]\) is computed (Table~\ref{tab:features}).
+All features are dimensionless ratios or normalised quantities, making
+the classifier independent of absolute load magnitude.\ The total feature
+vector occupies 40~bytes.
+
+\begin{table}[t]
+  \caption{Feature Vector Definition}
+  \label{tab:features}
+  \centering
+  \small
+  \begin{tabular}{clp{4.0cm}}
+    \toprule
+    Index & Symbol & Definition \\
+    \midrule
+    0 & $f_\text{PF}$   & Displacement power factor \\
+    1 & $f_\text{Qsgn}$ & Sign of reactive power ($\pm1$, 0) \\
+    2 & $f_\text{THD}$  & $\text{THD}_I = \sqrt{\sum |I_h|^2}\,/\,|I_1|$ \\
+    3 & $f_\text{H3}$   & $|I_3|\,/\,|I_1|$ \\
+    4 & $f_\text{H5}$   & $|I_5|\,/\,|I_1|$ \\
+    5 & $f_\text{H7}$   & $|I_7|\,/\,|I_1|$ \\
+    6 & $f_\text{CF}$   & Crest factor $I_\text{pk}/I_\text{rms}$ \\
+    7 & $f_\text{OE}$   & $(|I_2|+|I_4|)\,/\,|I_1|$ (asymmetry) \\
+    8 & $f_\text{H53}$  & $|I_5|\,/\,|I_3|$ (shape discriminator) \\
+    9 & $f_\text{Prms}$ & $\log_2(I_\text{rms}/0.05)$, clamped $[0,10]$ \\
+    \bottomrule
+  \end{tabular}
+\end{table}
+
+\subsubsection{Six-Class Load Taxonomy}
+
+Six load categories are defined to cover the dominant residential load
+types in a 220~V / 60~Hz Philippine residential installation
+(Table~\ref{tab:classes}).\ The taxonomy is designed so that each class
+has at least one strongly discriminative feature: SMPS loads are
+identified by their high crest factor (\(> 2.2\)); lighting (CFL/LED)
+by high H3/H1 ratio (\(> 0.35\)); motor loads by lagging power factor
+with low THD; fans by deep lagging power factor; capacitive loads by
+negative reactive power; and resistive loads by near-unity power factor
+and low THD.
+
+\begin{table}[t]
+  \caption{Six-Class Load Taxonomy}
+  \label{tab:classes}
+  \centering
+  \small
+  \begin{tabular}{clp{3.4cm}}
+    \toprule
+    ID & Class & Typical Loads \\
+    \midrule
+    0 & RESISTIVE  & Incandescent, flat iron, water heater \\
+    1 & CAPACITIVE & PFC-corrected SMPS, UPS on battery \\
+    2 & MOTOR\_1PH & Aircon compressor, refrigerator \\
+    3 & FAN        & Ceiling fan, desk fan, exhaust fan \\
+    4 & SMPS       & Laptop/phone charger, desktop PSU \\
+    5 & LIGHTING   & CFL, LED lamp (non-PFC), fluorescent \\
+    \bottomrule
+  \end{tabular}
+\end{table}
+
+\subsubsection{Baseline: Deterministic Decision Tree}
+
+The primary classifier is a hand-crafted decision tree that requires
+no labelled training data, executes in under 1~\(\mu\)s on the
+STM32F411, and is fully interpretable.\ The tree follows a
+``peel off the easy cases first'' strategy (Fig.~\ref{fig:dtree}):
+
+\begin{enumerate}
+  \item \textbf{No-load gate} (\(I_\text{rms} < 50\,\text{mA}\)):
+        below the noise floor; classify as RESISTIVE (idle).
+  \item \textbf{THD split} (\(\text{THD}_I < 0.15\)):
+        separates approximately sinusoidal loads (motor, fan,
+        resistive, capacitive) from distorted loads (SMPS, lighting).
+  \item \textbf{Low-THD branch}:
+        PF \(> 0.95\) \(\Rightarrow\) RESISTIVE;
+        \(Q_\text{sgn} < 0\) \(\Rightarrow\) CAPACITIVE;
+        PF \(> 0.72\) \(\Rightarrow\) MOTOR\_1PH; else FAN.
+  \item \textbf{High-THD branch}:
+        CF \(> 2.2\) \(\Rightarrow\) SMPS;
+        H3/H1 \(> 0.35\) \(\Rightarrow\) LIGHTING;
+        residual: apply PF and \(Q_\text{sgn}\) as in step~3.
+\end{enumerate}
+
+\begin{figure}[t]
+  \centering
+  \framebox{\parbox{\columnwidth}{\centering
+    \vspace{2cm}
+    [Decision Tree Diagram:\\
+    Root: Irms<50mA? -> RESISTIVE\\
+    THD<0.15? -> Low-THD branch (PF, Qsign) / High-THD branch (CF, H3)
+    ]
+    \vspace{2cm}
+  }}
+  \caption{Simplified decision tree structure.\ Each threshold is
+    stored in a \texttt{ClassifierThresholds} struct and can be updated
+    via OTA bulk transfer from the gateway.}
+  \label{fig:dtree}
+\end{figure}
+
+A confidence score (0--7, packed into 3 bits) is computed as the
+normalised distance from the crossed threshold.\ A 5-sample temporal
+smoother (confidence-weighted majority vote over 10~s of history)
+suppresses transient misclassifications during motor startup.\ The
+complete classification result, including confidence and transient
+flag, is packed into a single byte within the 32-byte
+\texttt{TelemetryPacket}.
+
+\subsubsection{Upgrade Path: TFLite Micro MLP}
+
+After supervised training data are collected (Phase~1, Section~\ref{sec:validation}),
+the decision tree is replaced by a compact 3-layer MLP (10 inputs,
+16 hidden (ReLU), 12 hidden (ReLU), 6 outputs (softmax)) with 458
+parameters.\ Post-training 8-bit quantisation reduces the model to
+approximately 500~bytes, deployable over the GFSK bulk channel.\ The
+TFLite Micro runtime requires a 4~kB tensor arena; inference takes
+approximately 2~\(\mu\)s on the STM32F411 Cortex-M4F using
+CMSIS-DSP-accelerated matrix operations \cite{arm_cmsis_dsp,
+warden_tinyml_2019}.\ A fallback mechanism reverts to the decision
+tree when the MLP softmax probability is below 0.5.
+
+\subsection{Gateway Dashboard and Data Management}
+\label{ssec:gateway}
+
+The ESP32-S3 gateway hosts a LittleFS single-page application (SPA)
+comprising HTML, CSS, JavaScript, and Chart.js, served via the
+ESPAsyncWebServer library.\ The SPA communicates with the gateway
+through a REST API and a WebSocket endpoint.\ Table~\ref{tab:api}
+summarises the key REST endpoints.
+
+\begin{table}[t]
+  \caption{Gateway REST and WebSocket API (Selected)}
+  \label{tab:api}
+  \centering
+  \small
+  \begin{tabular}{lp{5.0cm}}
+    \toprule
+    Endpoint & Function \\
+    \midrule
+    \texttt{GET /api/nodes}           & All registered node states \\
+    \texttt{GET /api/node/\{id\}/history} & 120-point V/I/P/class history \\
+    \texttt{POST /api/bulk}           & Enqueue GFSK bulk DL/UL transfer \\
+    \texttt{GET /api/features}        & Active build-flag feature set \\
+    \texttt{POST /api/login}          & Issue session token \\
+    WS: \texttt{telemetry}            & Real-time node update push \\
+    WS: \texttt{relay\_manual}        & Toggle relay on/off \\
+    WS: \texttt{relay\_schedule}      & Set timed relay schedule \\
+    WS: \texttt{set\_threshold}       & Update power-off threshold \\
+    \bottomrule
+  \end{tabular}
+\end{table}
+
+Per-node energy accumulators, 120-point telemetry histories
+(encoded as \texttt{HistoryPoint} structs at 16~bytes each), and node
+labels are persisted in the MB85RC256V FRAM.\ The memory map allocates
+1968~bytes per node slot (8~slots), occupying 15.7~kB of the 32~kB
+chip.\ FRAM writes are deferred through a dirty-count mechanism
+(threshold 10) and dispatched to a dedicated Core~0 FRAM task via a
+FreeRTOS queue, ensuring that I\textsuperscript{2}C writes never block
+the Core~1 TDMA timing task.\ Cross-slot UID lookup allows the
+gateway to restore a node's energy history and label after a reboot
+even if the node is assigned a different slot index.
+
+The dashboard password is stored in ESP-IDF NVS (namespace
+\texttt{wifi-cfg}, key \texttt{dashpass}).\ When a password is set,
+all REST and WebSocket endpoints require a session token obtained from
+\texttt{POST /api/login}.\ The system also supports optional AP
+password protection, NTP-synchronized timestamps, and static IP
+configuration.
+
+\subsection{System Integration}
+\label{ssec:integration}
+
+The firmware is compiled from a single codebase under ten PlatformIO
+environments differentiating gateway vs.\ node role, encrypted vs.\
+plaintext, hardware PZEM vs.\ simulated sensor, and ESP32-dev vs.\
+ESP32-S3 vs.\ STM32F411 target.\ Shared packet structures
+(\texttt{TelemetryPacket}, \texttt{BeaconPacket}, etc.) are defined
+once in \texttt{tdma\_protocol.h} with \texttt{\#pragma pack(1)}.
+
+A hardware abstraction layer (HAL) in \texttt{src/hal/} wraps all
+platform-exclusive APIs (reboot, RNG, NVS, AES, task creation,
+spinlock) behind thin C~function headers.\ Application code above the
+HAL is platform-agnostic; only the four \texttt{hal/*.cpp}
+implementation files differ between the ESP32 and STM32 targets.
+
+%% ============================================================
+\section{Validation Plan}
+\label{sec:validation}
+
+\subsection{Phase 1: Analog Front-End Characterisation}
+
+The analog front-end will be characterised against a calibrated
+Fluke~435-II power quality analyser as the reference.\ Test
+conditions cover:
+\begin{itemize}
+  \item Voltage accuracy: mains voltage varied $\pm 10\%$ around 220~V
+        via a variac; target \(\le 0.5\%\) error.
+  \item Current accuracy: precision resistive loads (100~W bulb,
+        1000~W heater) measured at PF~=~1.0; target \(\le 0.5\%\) error.
+  \item Power factor accuracy: ceiling fan and window-type aircon
+        (PF~=~0.55--0.90); target \(\le 0.005\).
+  \item Phase calibration: empirical determination of CT phase error
+        at 5~A and 30~A load levels using the two-point PHASE register
+        correction procedure.
+\end{itemize}
+
+\subsection{Phase 2: Load Classification Validation}
+
+The decision tree classifier will be validated against 18 physical
+loads (3 examples per class, listed in Table~\ref{tab:testloads}).
+Acceptance criteria: \(\ge 85\%\) class-averaged accuracy; no single
+class below 70\%.\ After validation, supervised labelling data will be
+collected (50--100 feature vectors per load) and used to train the
+TFLite Micro MLP offline.\ The trained model will be deployed via the
+GFSK bulk channel and re-evaluated against the same test set.
+
+\begin{table}[t]
+  \caption{Load Classification Validation Test Set}
+  \label{tab:testloads}
+  \centering
+  \small
+  \begin{tabular}{lp{5.2cm}}
+    \toprule
+    Class & Physical Test Loads \\
+    \midrule
+    RESISTIVE  & 100~W incandescent, electric flat iron, space heater \\
+    CAPACITIVE & Active-PFC laptop charger, UPS (battery mode) \\
+    MOTOR\_1PH & 0.75~HP window aircon, refrigerator compressor,
+                  washing machine \\
+    FAN        & 75~W ceiling fan, desk fan, exhaust fan \\
+    SMPS       & Laptop charger (no PFC), desktop PC PSU, 5~W USB charger \\
+    LIGHTING   & 13~W CFL, 9~W LED bulb (non-PFC),
+                  36~W fluorescent + magnetic ballast \\
+    \bottomrule
+  \end{tabular}
+\end{table}
+
+\subsection{Phase 3: Network Performance Characterisation}
+
+With all 8 node slots active and transmitting simulated telemetry
+(\texttt{PZEM\_FAKE} build flag), the uplink packet delivery ratio
+(PDR) will be measured over 1000 consecutive superframes (50~min) in
+a residential indoor environment (concrete walls, kitchen/living room
+separation) at typical node-to-gateway distances of 5--20~m.\ Target:
+PDR \(\ge 99\%\).\ Latency from sensor sampling to gateway WebSocket
+push will be measured; target: \(<\) 3.5~s (one superframe cycle).
+
+\subsection{Phase 4: GFSK Bulk Transfer Validation}
+
+The GFSK bulk transport will be validated through:
+\begin{enumerate}
+  \item Echo test (DL + UL round-trip) at payload sizes 1~B, 200~B,
+        201~B, 500~B, and 4096~B.
+  \item Forced-retransmission test: deliberate NACK injection to verify
+        ARQ recovery and end-to-end CRC-32 integrity.
+  \item Overrun protection: verify the GFSK phase terminates before
+        \texttt{END\_GUARD\_MS} under maximum payload + maximum retries.
+  \item Telemetry PDR regression: PDR must remain \(\ge 99\%\) during
+        bulk-active superframes.
+\end{enumerate}
+
+\subsection{Phase 5: MLP Deployment and Re-Evaluation}
+
+The quantised TFLite Micro MLP model (\(\approx 500\)~bytes) will be
+deployed to all 8 nodes via the GFSK broadcast mechanism
+(\texttt{POST /api/bulk/broadcast}).\ Classification accuracy will be
+re-measured using the same 18-load test set.\ Target: \(\ge 90\%\)
+class-averaged accuracy with the MLP, compared to the decision tree
+baseline.
+
+%% ============================================================
+\section{Expected Contributions and Outcomes}
+\label{sec:contributions}
+
+The proposed system makes the following contributions:
+
+\begin{enumerate}
+  \item \textbf{Precision waveform-accessible metering:} The
+        ADS131M02 + ZMPT101B + CT front-end provides simultaneous
+        voltage and current sampling at 4~kSPS with \(\le 0.5\%\)
+        accuracy and full galvanic isolation, enabling harmonic analysis
+        that is impossible with the PZEM-004T.
+
+  \item \textbf{Scalable deterministic MAC:} The frequency-hopping
+        TDMA protocol supports up to 8 nodes in a 3~s superframe with
+        guaranteed slot timing, collision-free operation, and a
+        provably unique per-packet keystream for AES-128 CTR
+        encryption.
+
+  \item \textbf{On-node, no-transmission-cost load classification:}
+        The decision tree and MLP classifiers run entirely on the
+        STM32F411 node; only a 1-byte result is transmitted per
+        superframe.\ This avoids the latency and bandwidth cost of
+        raw waveform uplink and maintains classification capability
+        even when the gateway is unreachable.
+
+  \item \textbf{OTA model management:} The GFSK bulk transfer
+        extension enables deployment of updated classifier models and
+        calibration data to all nodes within 24~s without disrupting
+        ongoing telemetry, providing a practical path from
+        decision-tree to trained MLP operation.
+
+  \item \textbf{Self-hosted residential dashboard:} The web SPA
+        requires no cloud infrastructure; the gateway operates as an
+        access point or connects to an existing router, making the
+        system deployable in locations without internet connectivity.
+\end{enumerate}
+
+The system is intended to serve as a research platform for evaluating
+harmonic-signature load classification under Philippine residential
+conditions (220~V / 60~Hz, tropical climate, diverse load mix).\ Data
+collected through the supervised labelling mode will contribute to a
+small labelled power signature dataset for the Philippine residential
+context, where public datasets such as REDD \cite{kolter_redd_2011}
+and UK-DALE \cite{kelly_neural_nilm_2015} are not directly applicable
+due to differing mains frequency (60~Hz vs.\ 50~Hz) and appliance
+profiles.
+
+%% ============================================================
+\section{Conclusion}
+\label{sec:conclusion}
+
+This paper has proposed a distributed power telemetry and load
+classification system tailored for Philippine residential energy
+monitoring.\ The system replaces the commodity PZEM-004T module with
+a precision ADS131M02 analog front-end that provides simultaneous
+voltage/current sampling, full galvanic isolation, and PGA
+gain-ranging across a 5000:1 current dynamic range.\ A TDMA LoRa MAC
+with frequency hopping, AES-128 CTR encryption, and a novel GFSK
+bulk transfer extension provides scalable, secure wireless
+connectivity for up to 8 nodes.\ An on-node harmonic feature
+extraction pipeline feeding a deterministic decision tree (with a
+TFLite Micro MLP upgrade path) classifies connected loads into six
+residential categories without transmitting raw waveform data.
+
+The integrated system is designed to validate \(\le 0.5\%\) metering
+accuracy, \(\ge 85\%\) classification accuracy, and \(\ge 99\%\)
+packet delivery ratio under realistic residential conditions.\ The
+proposed work addresses gaps in existing low-cost metering and NILM
+literature by combining precision simultaneous-channel ADC metering,
+structured encrypted wireless MAC, and embedded load classification in
+a single self-hosted platform applicable to the 60~Hz Philippine
+residential context.
+
+%% ============================================================
+\begin{thebibliography}{00}
+
+\bibitem{hart_nilm_1992}
+G.\ W.\ Hart, ``Nonintrusive appliance load monitoring,'' \textit{Proc.\
+IEEE}, vol.~80, no.~12, pp.~1870--1891, Dec.\ 1992.
+
+\bibitem{zeifman_nilm_review_2011}
+M.\ Zeifman and K.\ Roth, ``Nonintrusive appliance load monitoring:
+Review and outlook,'' \textit{IEEE Trans.\ Consum.\ Electron.}, vol.~57,
+no.~1, pp.~76--84, Feb.\ 2011.
+
+\bibitem{wichakool_harmonic_loads_2009}
+W.\ Wichakool, A.-T.\ Avestruz, R.\ W.\ Cox, and S.\ B.\ Leeb,
+``Modeling and estimating current harmonics of variable electronic
+loads,'' \textit{IEEE Trans.\ Power Electron.}, vol.~24, no.~12,
+pp.~2803--2811, Dec.\ 2009.
+
+\bibitem{lam_vI_trajectory_2007}
+H.\ Y.\ Lam, G.\ S.\ K.\ Fung, and W.\ K.\ Lee, ``A novel method to
+construct taxonomy of electrical appliances based on load signatures,''
+\textit{IEEE Trans.\ Consum.\ Electron.}, vol.~53, no.~2,
+pp.~653--660, May 2007.
+
+\bibitem{kolter_redd_2011}
+Z.\ Kolter and M.\ Johnson, ``REDD: A public data set for energy
+disaggregation research,'' in \textit{Proc.\ Workshop Data Mining Appl.\
+Sustain.\ (SustKDD)}, 2011.
+
+\bibitem{kelly_neural_nilm_2015}
+J.\ Kelly and W.\ Knottenbelt, ``Neural NILM: Deep neural networks
+applied to energy disaggregation,'' in \textit{Proc.\ 2nd ACM Int.\ Conf.\
+Embedded Syst.\ Energy-Efficient Built Environ.\ (BuildSys)}, 2015,
+pp.~55--64.
+
+\bibitem{parson_unsupervised_nilm_2012}
+O.\ Parson, S.\ Ghosh, M.\ Weal, and A.\ Rogers, ``An unsupervised
+training method for non-intrusive appliance load monitoring,''
+\textit{Artif.\ Intell.}, vol.~217, pp.~1--19, Dec.\ 2014.
+
+\bibitem{adamo_power_quality_2011}
+F.\ Adamo, F.\ Attivissimo, A.\ Di Nisio, and M.\ Spadavecchia,
+``A low-cost tool for power quality monitoring in home automation
+systems,'' in \textit{Proc.\ IEEE Instrum.\ Meas.\ Technol.\ Conf.\
+(I2MTC)}, 2011, pp.~1--6.
+
+\bibitem{ti_ads131m02_ds}
+Texas Instruments, ``ADS131M02: 2-channel, simultaneously sampling,
+24-bit, delta-sigma ADC,'' Datasheet SBAS865B, Sep.\ 2020.\ [Online].
+Available: \url{https://www.ti.com/product/ADS131M02}
+
+\bibitem{zmpt101b_datasheet}
+Zhongce Transformer Co., ``ZMPT101B precision miniature voltage
+transformer,'' Component Datasheet, 2018.
+
+\bibitem{augustin_lora_sensors_2016}
+A.\ Augustin, J.\ Yi, T.\ Clausen, and W.\ M.\ Townsley, ``A study of
+LoRa: Long range and low power networks for the internet of things,''
+\textit{Sensors}, vol.~16, no.~9, p.~1466, Sep.\ 2016.
+
+\bibitem{raza_lpwan_survey_2017}
+U.\ Raza, P.\ Kulkarni, and M.\ Sooriyabandara, ``Low power wide area
+networks: An overview,'' \textit{IEEE Commun.\ Surv.\ Tut.}, vol.~19,
+no.~2, pp.~855--873, 2nd Qtr.\ 2017.
+
+\bibitem{bor_lorawan_scale_2016}
+M.\ Bor, J.\ Vidler, and U.\ Roedig, ``LoRa for the internet of
+things,'' in \textit{Proc.\ 13th Int.\ Workshop Mobile Ubiquitous Syst.:
+Comput., Netw.\ Services (EWsN)}, 2016.
+
+\bibitem{semtech_sx1278_ds}
+Semtech Corporation, ``SX1276/77/78/79: 137 MHz to 1020 MHz low power
+long range transceiver,'' Datasheet Rev.~7, 2020.\ [Online].
+Available: \url{https://www.semtech.com/products/wireless-rf/lora-core/sx1276}
+
+\bibitem{nist_sp800_38a}
+M.\ Dworkin, ``Recommendation for block cipher modes of operation:
+Methods and techniques,'' NIST Special Publication 800-38A, Dec.\
+2001.\ [Online].\ Available: \url{https://doi.org/10.6028/NIST.SP.800-38A}
+
+\bibitem{lorawan_spec}
+LoRa Alliance, ``LoRaWAN\texttrademark{} 1.0.4 specification,'' Oct.\
+2020.\ [Online].\ Available: \url{https://lora-alliance.org/resource_hub/lorawan-104-specification-package/}
+
+\bibitem{hancke_rfid_security_2005}
+G.\ P.\ Hancke and M.\ G.\ Kuhn, ``An RFID distance bounding protocol,''
+in \textit{Proc.\ 1st Int.\ Conf.\ Security Privacy Emerging Areas
+Commun.\ Netw.\ (SecureComm)}, 2005, pp.~67--73.
+
+\bibitem{david_tflite_micro_2021}
+R.\ David \textit{et al.}, ``TensorFlow Lite Micro: Embedded machine
+learning for TinyML systems,'' \textit{Proc.\ Mach.\ Learn.\ Syst.
+(MLSys)}, 2021.\ [Online].\ Available: \url{https://arxiv.org/abs/2010.08678}
+
+\bibitem{warden_tinyml_2019}
+P.\ Warden and D.\ Situnayake, \textit{TinyML: Machine Learning with
+TensorFlow Lite on Arduino and Ultra-Low-Power Microcontrollers}.\
+Sebastopol, CA, USA: O'Reilly Media, 2019.
+
+\bibitem{arm_cmsis_dsp}
+ARM Limited, ``CMSIS-DSP software library,'' Documentation Version
+1.15.0, 2024.\ [Online].\ Available:
+\url{https://arm-software.github.io/CMSIS_5/DSP/html/index.html}
+
+\bibitem{radiolib}
+J.\ Gromes, ``RadioLib: Universal wireless communication library for
+Arduino,'' GitHub, 2024.\ [Online].\ Available:
+\url{https://github.com/jgromes/RadioLib}
+
+\bibitem{ieee_std_1459}
+IEEE, ``IEEE standard definitions for the measurement of electric power
+quantities under sinusoidal, nonsinusoidal, balanced, or unbalanced
+conditions,'' IEEE Std 1459-2010, Feb.\ 2010.
+
+\bibitem{stm32f411_rm}
+STMicroelectronics, ``STM32F411xC/xE reference manual,'' RM0383
+Rev.~4, 2023.\ [Online].\ Available:
+\url{https://www.st.com/resource/en/reference_manual/rm0383-stm32f411xce-advanced-armbased-32bit-mcus-stmicroelectronics.pdf}
+
+\end{thebibliography}
+
+\end{document}
