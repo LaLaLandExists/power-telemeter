@@ -6,42 +6,19 @@
  *   node_tdma_task.h  -- task-based (ESP32 and STM32 non-IRQ builds)
  *   node_irq_tdma.h   -- interrupt-driven (STM32 IRQ builds)
  *
- * Add new PZEM fields to PzemData here; both TDMA implementations pick them
- * up automatically.  Extend TelemetryPacket in tdma_protocol.h and update
- * buildTelemetryPacket() in node_tdma_common.cpp.
+ * To add new meter fields, extend MeterData in meter.h; both TDMA
+ * implementations pick them up automatically.  Also extend TelemetryPacket
+ * in tdma_protocol.h and update buildTelemetryPacket() in node_tdma_common.cpp.
  */
 #pragma once
 #include <Arduino.h>
 #include "hal/hal_rtos.h"
 #include "tdma_protocol.h"
-
-// =============================================================================
-// PZEM data -- single definition shared by all node builds
-// =============================================================================
-
-struct PzemData {
-  float    voltage;
-  float    current;
-  float    power;
-  uint32_t energy;         // Wh (raw PZEM register)
-  float    frequency;
-  float    powerFactor;
-  uint16_t alarmThreshold; // last value written to PZEM alarm register
-  bool     valid;
-  uint32_t readAt;         // millis() of last successful read
-
-  // Pending threshold write: set by TDMA task, consumed by pzemTask.
-  // Both fields protected by g_pzemMutex.
-  uint16_t pendingThresholdW;
-  bool     hasPendingThreshold;
-};
+#include "meter.h"
 
 // =============================================================================
 // Globals (defined in node_tdma_common.cpp)
 // =============================================================================
-
-extern PzemData          g_pzem;
-extern SemaphoreHandle_t g_pzemMutex;
 
 extern bool     g_nodeRegistered;
 extern uint8_t  g_nodeSlotId;

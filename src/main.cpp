@@ -91,7 +91,7 @@
   #include "fram_store.h"
 #endif
 #ifdef NODE_TELEMETRY
-  #ifndef PZEM_FAKE
+  #if !defined(PZEM_FAKE) && !defined(METER_AFE)
   #include <PZEM004Tv30.h>
   #endif
   #ifdef TDMA_IRQ_DRIVEN
@@ -206,8 +206,8 @@
 #endif
 
 #ifdef NODE_TELEMETRY
-  #ifndef PZEM_FAKE
-  // PZEM-004T v3 on Serial2 - extern-referenced by node_tdma_task.cpp.
+  #if !defined(PZEM_FAKE) && !defined(METER_AFE)
+  // PZEM-004T v3 on Serial2 - extern-referenced by meter_pzem.cpp.
   // ESP32 constructor accepts (port, rx_pin, tx_pin) for runtime UART remapping.
   // STM32: create an explicit HardwareSerial bound to PZEM_RX/TX pins.
   // STM32duino resolves the correct UART peripheral (USART2) from PA2/PA3
@@ -487,9 +487,11 @@ void setup() {
   }
   radio.setCRC(true);
 
-  // -- PZEM sanity check -----------------------------------------------------
-#ifdef PZEM_FAKE
-  Serial.println("[PZEM-FAKE] Net-test mode -- skipping PZEM hardware check");
+  // -- Meter sanity check -----------------------------------------------------
+#if defined(PZEM_FAKE)
+  Serial.println("[METER] Net-test mode -- skipping hardware meter check");
+#elif defined(METER_AFE)
+  Serial.println("[METER-AFE] AFE mode -- PZEM hardware check skipped");
 #else
   Serial.print("[PZEM] Checking connection ... ");
   delay(200);
@@ -498,7 +500,7 @@ void setup() {
     Serial.printf("OK (%.1f V)\n", testV);
   } else {
     Serial.println("No response - check wiring (TX/RX swapped?)");
-    // pzemTask will keep retrying - non-fatal
+    // meterTaskFn will keep retrying -- non-fatal
   }
 #endif
 

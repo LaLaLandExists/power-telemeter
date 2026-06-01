@@ -11,12 +11,12 @@
  *   - Downlink command handler
  *   - Telemetry packet builder (no encryption, no TX)
  *   - GFSK bulk transfer (send + receive) + LoRa restore
- *   - PZEM sampling task, schedule evaluator task
+ *   - Schedule evaluator task
  *   - nodeTdmaStartCommonTasks()
  *
- * To extend PZEM data or telemetry:
- *   1. Add fields to PzemData in node_tdma_common.h
- *   2. Update pzemTask() reads below
+ * To extend meter data or telemetry:
+ *   1. Add fields to MeterData in meter.h
+ *   2. Populate the field in the active metering backend (meter_*.cpp)
  *   3. Update buildTelemetryPacket() below (and TelemetryPacket in tdma_protocol.h)
  */
 #ifdef NODE_TELEMETRY
@@ -26,18 +26,9 @@
 #include "hal/hal_sys.h"
 #include "hal/hal_rtos.h"
 #include <RadioLib.h>
-#ifndef PZEM_FAKE
-#include <PZEM004Tv30.h>
-#endif
-#ifdef PZEM_FAKE
-#include "node_fake_pzem.h"
-#endif
 
 // --- Hardware instances (defined in main.cpp) --------------------------------
 extern SX1278 radio;
-#ifndef PZEM_FAKE
-extern PZEM004Tv30 pzem;
-#endif
 
 // --- GPIO pins (defined in main.cpp, NODE_TELEMETRY build) -------------------
 extern uint8_t RELAY_PIN;
@@ -48,8 +39,8 @@ extern uint8_t LED_RED_PIN;
 // Global variable definitions
 // =============================================================================
 
-PzemData          g_pzem       = {};
-SemaphoreHandle_t g_pzemMutex  = nullptr;
+MeterData         g_meter      = {};
+SemaphoreHandle_t g_meterMutex = nullptr;
 
 bool     g_nodeRegistered = false;
 uint8_t  g_nodeSlotId     = 0;
@@ -97,7 +88,7 @@ static TaskHandle_t           s_ledTaskHandle = nullptr;
 
 void setRelay(uint8_t state) {
   g_relayState = state & 1;
-#ifndef PZEM_FAKE
+#ifndef PZEM_FAKE  // nettest builds have no real relay hardware
   digitalWrite(RELAY_PIN, g_relayState ? HIGH : LOW);
 #endif
 }
@@ -239,11 +230,11 @@ void handleDownlink(const uint8_t* buf, int16_t len) {
   case PKT_THRESHOLD:
     if (len >= 4) {
       uint16_t watts = (uint16_t)buf[2] | ((uint16_t)buf[3] << 8);
-      if (xSemaphoreTake(g_pzemMutex, pdMS_TO_TICKS(100)) == pdTRUE) {
-        g_pzem.alarmThreshold      = watts;
-        g_pzem.pendingThresholdW   = watts;
-        g_pzem.hasPendingThreshold = true;
-        xSemaphoreGive(g_pzemMutex);
+      if (xSemaphoreTake(g_meterMutex, pdMS_TO_TICKS(100)) == pdTRUE) {
+        g_meter.alarmThreshold      = watts;
+        g_meter.pendingThresholdW   = watts;
+        g_meter.hasPendingThreshold = true;
+        xSemaphoreGive(g_meterMutex);
       }
       logAsync("[NODE-DL] Alarm threshold queued -> %d W\n", watts);
     }
@@ -273,15 +264,9 @@ void handleDownlink(const uint8_t* buf, int16_t len) {
 // =============================================================================
 // Telemetry packet builder
 //
-// Fills all fields from g_pzem and node state.
+// Fills all fields from g_meter and node state.
 // Does NOT encrypt or transmit; caller handles those steps so that task-based
 // and IRQ-driven builds can use blocking vs. non-blocking TX respectively.
-//
-// To add new PZEM fields to the packet:
-//   1. Add field to PzemData in node_tdma_common.h
-//   2. Read it in pzemTask() below
-//   3. Add field to TelemetryPacket in tdma_protocol.h
-//   4. Encode it here
 // =============================================================================
 
 #define PZEM_ENERGY_MAX_WH 9999990UL
@@ -289,15 +274,15 @@ void handleDownlink(const uint8_t* buf, int16_t len) {
 void buildTelemetryPacket(TelemetryPacket& pkt) {
   pkt = {};
 
-  if (xSemaphoreTake(g_pzemMutex, pdMS_TO_TICKS(50)) == pdTRUE) {
-    pkt.voltage     = (uint16_t)(g_pzem.voltage     * 10.0f);
-    pkt.current     = (uint32_t)(g_pzem.current     * 1000.0f);
-    pkt.power       = (uint32_t)(g_pzem.power       * 10.0f);
-    pkt.frequency   = (uint16_t)(g_pzem.frequency   * 10.0f);
-    pkt.powerFactor = (uint16_t)(g_pzem.powerFactor * 100.0f);
-    pkt.alarmThreshold = g_pzem.alarmThreshold;
+  if (xSemaphoreTake(g_meterMutex, pdMS_TO_TICKS(50)) == pdTRUE) {
+    pkt.voltage     = (uint16_t)(g_meter.voltage     * 10.0f);
+    pkt.current     = (uint32_t)(g_meter.current     * 1000.0f);
+    pkt.power       = (uint32_t)(g_meter.power       * 10.0f);
+    pkt.frequency   = (uint16_t)(g_meter.frequency   * 10.0f);
+    pkt.powerFactor = (uint16_t)(g_meter.powerFactor * 100.0f);
+    pkt.alarmThreshold = g_meter.alarmThreshold;
 
-    uint32_t rawEnergy = g_pzem.energy;
+    uint32_t rawEnergy = g_meter.energy;
     uint32_t energyDelta;
     if (!s_pzemEnergyBaseSet) {
       s_lastPzemEnergy    = rawEnergy;
@@ -310,7 +295,7 @@ void buildTelemetryPacket(TelemetryPacket& pkt) {
     }
     s_lastPzemEnergy = rawEnergy;
     pkt.energy = energyDelta;
-    xSemaphoreGive(g_pzemMutex);
+    xSemaphoreGive(g_meterMutex);
   }
 
   uint8_t alarmState = (pkt.alarmThreshold > 0 &&
@@ -487,61 +472,6 @@ void tdmaRunBulkIdle(uint16_t sfCount, uint32_t beaconReceiveTime) {
 }
 
 // =============================================================================
-// PZEM sampling task
-// =============================================================================
-#ifndef PZEM_FAKE
-static void pzemTask(void* /*params*/) {
-  Serial.println("[PZEM] Sampling task started");
-  while (true) {
-    float v  = pzem.voltage();
-    float i  = pzem.current();
-    float p  = pzem.power();
-    float e  = pzem.energy();
-    float f  = pzem.frequency();
-    float pf = pzem.pf();
-    bool valid = !isnan(v) && !isnan(i) && !isnan(p) && !isnan(f);
-
-    if (valid) {
-      if (xSemaphoreTake(g_pzemMutex, pdMS_TO_TICKS(50)) == pdTRUE) {
-        g_pzem.voltage     = v;
-        g_pzem.current     = i;
-        g_pzem.power       = p;
-        g_pzem.energy      = isnan(e) ? g_pzem.energy : (uint32_t)e;
-        g_pzem.frequency   = f;
-        g_pzem.powerFactor = isnan(pf) ? 0.0f : pf;
-        g_pzem.valid       = true;
-        g_pzem.readAt      = millis();
-        xSemaphoreGive(g_pzemMutex);
-      }
-    } else {
-      static uint32_t lastErrLog = 0;
-      if (millis() - lastErrLog > 5000) {
-        Serial.println("[PZEM] Read error - check wiring/baud");
-        lastErrLog = millis();
-      }
-    }
-
-    bool doThreshold = false;
-    uint16_t threshWatts = 0;
-    if (xSemaphoreTake(g_pzemMutex, pdMS_TO_TICKS(50)) == pdTRUE) {
-      if (g_pzem.hasPendingThreshold) {
-        doThreshold = true;
-        threshWatts = g_pzem.pendingThresholdW;
-        g_pzem.hasPendingThreshold = false;
-      }
-      xSemaphoreGive(g_pzemMutex);
-    }
-    if (doThreshold) {
-      bool ok = pzem.setPowerAlarm(threshWatts);
-      Serial.printf("[PZEM] Alarm threshold -> %d W (%s)\n", threshWatts, ok ? "OK" : "FAIL");
-    }
-
-    vTaskDelay(pdMS_TO_TICKS(500));
-  }
-}
-#endif // !PZEM_FAKE
-
-// =============================================================================
 // Schedule evaluator task (runs every 10 s, independent of TDMA cycle)
 // =============================================================================
 
@@ -554,19 +484,15 @@ static void schedTask(void* /*params*/) {
 // =============================================================================
 
 void nodeTdmaStartCommonTasks() {
-  g_pzemMutex = xSemaphoreCreateMutex();
-  configASSERT(g_pzemMutex);
+  g_meterMutex = xSemaphoreCreateMutex();
+  configASSERT(g_meterMutex);
 
   g_nodeUID = computeDeviceUID();
   Serial.printf("[NODE] Device UID = 0x%04X\n", g_nodeUID);
 
-#ifdef PZEM_FAKE
-  halTaskCreatePinned(fakePzemTask, "PZEM",  4096, nullptr, 1, HAL_CORE_0, nullptr);
-#else
-  halTaskCreatePinned(pzemTask,     "PZEM",  4096, nullptr, 1, HAL_CORE_0, nullptr);
-#endif
-  halTaskCreatePinned(schedTask, "SCHED", 2048, nullptr, 1, HAL_CORE_0, nullptr);
-  halTaskCreatePinned(ledTask,   "LED",   2048, nullptr, 1, HAL_CORE_0, &s_ledTaskHandle);
+  halTaskCreatePinned(meterTaskFn, "METER", 4096, nullptr, 1, HAL_CORE_0, nullptr);
+  halTaskCreatePinned(schedTask,   "SCHED", 2048, nullptr, 1, HAL_CORE_0, nullptr);
+  halTaskCreatePinned(ledTask,     "LED",   2048, nullptr, 1, HAL_CORE_0, &s_ledTaskHandle);
 }
 
 #endif // NODE_TELEMETRY

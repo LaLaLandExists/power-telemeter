@@ -205,7 +205,7 @@ static void startUlTx(TdmaIrqState_t* state) {
   pktEncrypt(s_txBuf, sizeof(s_txBuf), s_sfCount, g_nodeSlotId, PKT_DIR_UL);
 
   logAsync("[NODE-TX] V=%.1f A=%.3f W=%.1f seq=%d\n",
-           g_pzem.voltage, g_pzem.current, g_pzem.power,
+           g_meter.voltage, g_meter.current, g_meter.power,
            pkt.seqCounter & 0x7F);
 
   s_awaitTxDone = true;

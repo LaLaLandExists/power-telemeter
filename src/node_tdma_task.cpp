@@ -65,7 +65,7 @@ static void transmitTelemetry(uint16_t sfCount) {
   int16_t st = radio.transmit(txBuf, sizeof(txBuf));
   if (st == RADIOLIB_ERR_NONE) {
     logAsync("[NODE-TX] V=%.1f A=%.3f W=%.1f seq=%d\n",
-             g_pzem.voltage, g_pzem.current, g_pzem.power,
+             g_meter.voltage, g_meter.current, g_meter.power,
              pkt.seqCounter & 0x7F);
   } else {
     logAsync("[NODE-TX] Error %d\n", st);

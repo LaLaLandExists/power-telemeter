@@ -1,30 +1,36 @@
-#ifdef PZEM_FAKE
+/**
+ * meter_fake.cpp
+ * Simulated metering backend for network-test builds (-D PZEM_FAKE).
+ * No real meter hardware required. Produces a refrigerator-like load profile
+ * matching simulation.js Node 1 so the LoRa TDMA path can be exercised
+ * without AC metering hardware attached.
+ */
+#if defined(NODE_TELEMETRY) && defined(PZEM_FAKE)
 
-#include "node_fake_pzem.h"
-#include "node_tdma_common.h"
+#include "meter.h"
 #include <Arduino.h>
 #include <math.h>
 #include <stdlib.h>
 
-// --- Load profile (refrigerator-like, matches simulation.js Node 1) ----------
-#define FAKE_NOMINAL_W      120.0f
-#define FAKE_IDLE_W           5.0f
-#define FAKE_CYCLE_MS      600000UL   // 10-minute ON/OFF cycle
-#define FAKE_ON_FRAC          0.60f
-#define FAKE_VOLT_NOM       220.0f
-#define FAKE_FREQ_NOM        60.0f
-#define FAKE_PF_NOM           0.85f
-#define FAKE_PF_NOISE         0.04f
+// --- Load profile constants --------------------------------------------------
+#define FAKE_NOMINAL_W     120.0f
+#define FAKE_IDLE_W          5.0f
+#define FAKE_CYCLE_MS     600000UL  // 10-minute ON/OFF cycle
+#define FAKE_ON_FRAC         0.60f
+#define FAKE_VOLT_NOM      220.0f
+#define FAKE_FREQ_NOM       60.0f
+#define FAKE_PF_NOM          0.85f
+#define FAKE_PF_NOISE        0.04f
 
 // Uniform random noise in [-amp, +amp], matching simulation.js noise(amp)
 static inline float noise(float amp) {
   return ((float)(rand() % 1001) / 500.0f - 1.0f) * amp;
 }
 
-void fakePzemTask(void* /*params*/) {
+void meterTaskFn(void* /*params*/) {
   Serial.println("[PZEM-FAKE] Task started -- net-test mode, no hardware required");
 
-  float    accumEnergyWhF = 0.0f;   // float carry so sub-Wh values accumulate
+  float    accumEnergyWhF = 0.0f;  // float carry so sub-Wh values accumulate
   uint32_t lastMs         = millis();
 
   while (true) {
@@ -32,11 +38,15 @@ void fakePzemTask(void* /*params*/) {
     uint32_t dt_ms = now - lastMs;
     lastMs = now;
 
-    // Determine cycle phase from absolute time so phase survives task restarts
-    uint32_t phase_ms = now % FAKE_CYCLE_MS;
+    uint32_t phase_ms  = now % FAKE_CYCLE_MS;
     bool     inOnPhase = phase_ms < (uint32_t)(FAKE_CYCLE_MS * FAKE_ON_FRAC);
 
     float v, i, p, pf, f;
+
+    // Relay state read outside mutex -- g_relayState is written by setRelay()
+    // which is called only from the TDMA task or schedule task; reading it
+    // without the mutex here is acceptable (single-byte, atomic on ARM/Xtensa).
+    extern uint8_t g_relayState;
 
     if (g_relayState == 0) {
       // Relay OFF: line voltage present, no current
@@ -53,7 +63,6 @@ void fakePzemTask(void* /*params*/) {
          + noise(FAKE_NOMINAL_W * 0.05f);
       if (p < 0.0f) p = 0.0f;
       pf = fminf(1.0f, fmaxf(0.5f, FAKE_PF_NOM + noise(FAKE_PF_NOISE)));
-      // First pass: estimate I, compute voltage sag, then recalculate I
       float i_est = p / (FAKE_VOLT_NOM * pf + 0.001f);
       v  = fmaxf(195.0f, FAKE_VOLT_NOM - i_est * 0.3f + noise(0.4f));
       i  = p / (v * pf + 0.001f);
@@ -68,30 +77,28 @@ void fakePzemTask(void* /*params*/) {
       f  = FAKE_FREQ_NOM + 0.06f * sinf((float)now / 18000.0f) + noise(0.04f);
     }
 
-    // Accumulate energy: float carry prevents sub-Wh increments from being lost
     accumEnergyWhF += p * (float)dt_ms / 3600000.0f;
 
-    // Write to shared g_pzem and consume any pending threshold command
     bool     doThreshold = false;
     uint16_t threshWatts = 0;
 
-    if (xSemaphoreTake(g_pzemMutex, pdMS_TO_TICKS(50)) == pdTRUE) {
-      g_pzem.voltage     = v;
-      g_pzem.current     = i;
-      g_pzem.power       = p;
-      g_pzem.energy      = (uint32_t)accumEnergyWhF;
-      g_pzem.frequency   = f;
-      g_pzem.powerFactor = pf;
-      g_pzem.valid       = true;
-      g_pzem.readAt      = now;
+    if (xSemaphoreTake(g_meterMutex, pdMS_TO_TICKS(50)) == pdTRUE) {
+      g_meter.voltage     = v;
+      g_meter.current     = i;
+      g_meter.power       = p;
+      g_meter.energy      = (uint32_t)accumEnergyWhF;
+      g_meter.frequency   = f;
+      g_meter.powerFactor = pf;
+      g_meter.valid       = true;
+      g_meter.readAt      = now;
 
-      if (g_pzem.hasPendingThreshold) {
-        doThreshold                = true;
-        threshWatts                = g_pzem.pendingThresholdW;
-        g_pzem.alarmThreshold      = threshWatts;
-        g_pzem.hasPendingThreshold = false;
+      if (g_meter.hasPendingThreshold) {
+        doThreshold                 = true;
+        threshWatts                 = g_meter.pendingThresholdW;
+        g_meter.alarmThreshold      = threshWatts;
+        g_meter.hasPendingThreshold = false;
       }
-      xSemaphoreGive(g_pzemMutex);
+      xSemaphoreGive(g_meterMutex);
     }
 
     if (doThreshold) {
@@ -102,4 +109,4 @@ void fakePzemTask(void* /*params*/) {
   }
 }
 
-#endif // PZEM_FAKE
+#endif // NODE_TELEMETRY && PZEM_FAKE
