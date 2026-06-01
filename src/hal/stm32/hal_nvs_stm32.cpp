@@ -7,32 +7,42 @@
  *
  *   [0x000] Sector header (16 bytes)
  *              magic    uint32_t  0xBEEFCAFE
- *              version  uint32_t  0x00000001
+ *              version  uint32_t  0x00000002
  *              pad      uint8_t[8]
- *   [0x010] Record[0]   (96 bytes each)
- *   [0x070] Record[1]
+ *   [0x010] Record[0]   (64 bytes each)
+ *   [0x050] Record[1]
  *   ...
- *   [0x1FFEF] Record[1364]  -- sector end (128 KB - 16 B) / 96 B = 1364 slots
+ *   [0x1FFEF] Record[2046]  -- sector end (128 KB - 16 B) / 64 B = 2047 slots
  *
- * Record format (96 bytes, word-aligned):
+ * Record format (64 bytes, word-aligned):
  *   status    uint8_t   0xFF=free, 0xAA=active, 0x00=deleted
  *   type      uint8_t   1=str, 2=blob, 3=int32
  *   data_len  uint16_t  byte count of data payload
- *   ns        char[16]  namespace (null-padded)
- *   key       char[16]  key (null-padded)
- *   data      uint8_t[60]  payload
+ *   ns        char[12]  namespace (null-padded)
+ *   key       char[12]  key (null-padded)
+ *   data      uint8_t[32]  payload
+ *   pad       uint8_t[4]   word-alignment pad
+ *
+ * Payloads on this node:
+ *   lora-net/aeskey   : 16 B  (AES-128 key)
+ *   afe-cal/kv,ki     :  4 B  (calibration floats)
+ *   afe-cal/phcorr    :  4 B
+ *   clf/thresholds    : 28 B  (ClassifierThresholds, 7 x float32)
+ *   clf/mode,model_ver:  4 B  (int32)
+ * Largest payload: 28 B (ClassifierThresholds).  32-byte data field
+ * covers all current and anticipated keys with margin.
  *
  * Write policy: mark-deleted + append.  Compact (erase + rewrite active
  * records) when the first free slot is past NVS_COMPACT_THRESHOLD.  The
- * compact buffer holds up to NVS_COMPACT_MAX records in SRAM -- 32 * 96 B
- * = 3 KB, comfortably within the F411's 128 KB RAM.
+ * compact buffer holds up to NVS_COMPACT_MAX records in SRAM -- 16 * 64 B
+ * = 1 KB, well within the F411's 128 KB RAM.
  *
  * NOTE: Flash sector erase stalls instruction fetch from flash for ~1-4 s
  * (STM32F4, 128 KB sector at 3.3 V).  This only occurs on first boot
  * (magic absent) or during rare compaction.  Acceptable for NVS use.
  *
- * Future extension: add more record types or increase NVS_COMPACT_MAX as
- * the node gains more persistent state.
+ * To grow: increase NVS_DATA_MAX (must stay <= 60 for 64-byte record budget)
+ * or increase NVS_COMPACT_MAX if more than 16 active keys are anticipated.
  */
 #if defined(BOARD_STM32_F411)
 
@@ -50,13 +60,13 @@
 #define NVS_SECTOR_SIZE     (128UL * 1024UL)
 
 #define NVS_MAGIC           0xBEEFCAFEUL
-#define NVS_VERSION         1UL
+#define NVS_VERSION         2UL    // v2: 64-byte record (was 96-byte in v1)
 
 #define NVS_HDR_SIZE        16U
-#define NVS_REC_SIZE        96U    // sizeof(NvsRecord), asserted below
-#define NVS_NS_MAX          16U
-#define NVS_KEY_MAX         16U
-#define NVS_DATA_MAX        60U
+#define NVS_REC_SIZE        64U    // sizeof(NvsRecord), asserted below
+#define NVS_NS_MAX          12U
+#define NVS_KEY_MAX         12U
+#define NVS_DATA_MAX        32U    // 28 B ClassifierThresholds is the largest payload
 
 #define NVS_STATUS_FREE     0xFFU
 #define NVS_STATUS_ACTIVE   0xAAU
@@ -66,10 +76,11 @@
 #define NVS_TYPE_BLOB       2U
 #define NVS_TYPE_INT        3U
 
-// Slot index at which compaction is triggered (leaves plenty of headroom).
-#define NVS_COMPACT_THRESHOLD  512U
-// Max records preserved during compaction (SRAM buffer = 32 * 96 = 3 KB).
-#define NVS_COMPACT_MAX        32U
+// Compact when slot index exceeds this (7 active keys x headroom; 2047 total slots).
+#define NVS_COMPACT_THRESHOLD  128U
+// Max active records preserved during compaction (SRAM = 16 * 64 = 1 KB).
+// 7 anticipated keys; 16 gives 2x headroom for future growth.
+#define NVS_COMPACT_MAX        16U
 
 // ---------------------------------------------------------------------------
 // Record struct
@@ -77,12 +88,13 @@
 
 #pragma pack(push, 1)
 struct NvsRecord {
-  uint8_t  status;
-  uint8_t  type;
-  uint16_t data_len;
-  char     ns[NVS_NS_MAX];
-  char     key[NVS_KEY_MAX];
-  uint8_t  data[NVS_DATA_MAX];
+  uint8_t  status;           // 1
+  uint8_t  type;             // 1
+  uint16_t data_len;         // 2
+  char     ns[NVS_NS_MAX];   // 12
+  char     key[NVS_KEY_MAX]; // 12
+  uint8_t  data[NVS_DATA_MAX]; // 32
+  uint8_t  pad[4];           // 4 -- word-align to 64 bytes
 };
 #pragma pack(pop)
 
