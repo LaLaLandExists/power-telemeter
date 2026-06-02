@@ -120,6 +120,12 @@ struct NodeState {
   uint8_t  seqLast;           // Last seqCounter received (for packet loss calc)
   uint8_t  beaconRSSI;        // Last beacon RSSI as reported by node
   uint8_t  fwVersion;
+
+  // Load classifier result (raw classByte from TelemetryPacket).
+  // CLASS_BYTE_UNSUPPORTED (0xFF) = PZEM/no-AFE node.
+  // CLASS_BYTE_PENDING     (0x40) = AFE node, smoothing window filling.
+  // All other values: packed classId[2:0] + confidence[5:3] + transient[6].
+  uint8_t  classByte = CLASS_BYTE_UNSUPPORTED;
 };
 
 // -----------------------------------------------------------------------------

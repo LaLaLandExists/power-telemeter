@@ -42,6 +42,22 @@ const NUDGED_ICO='<svg width="10" height="10" viewBox="0 0 24 24" fill="none" st
 const RELAY_WARN_W=5;       // watts: relay-off but still drawing power triggers warning
 const SUPERFRAME_MS=3000;   // grace period before showing relay-ineffective warning
 
+/* -- Classifier -------------------------------------------------- */
+const CLF_NAMES=['Resistive','Capacitive','Motor','Fan','SMPS','Lighting','None'];
+const CLF_COLORS=['#8892a4','#4fc3f7','#ff9f43','#06d6a0','#ff6b6b','#ffd166','#4a5568'];
+
+function clfBadgeHtml(clf,full){
+  if(!clf||!clf.supported)return'';
+  if(clf.pending)return`<div class="nc-clf"><span class="clf-pending M">Analyzing...</span></div>`;
+  const name=CLF_NAMES[clf.classId]||'Unknown';
+  const color=CLF_COLORS[clf.classId]||'#8892a4';
+  if(!full||clf.classId===6)return`<div class="nc-clf"><span class="clf-badge M" style="--bc:${color}">${name}</span></div>`;
+  const conf=Math.min(7,Math.max(0,clf.confidence||0));
+  const pct=Math.round(conf/7*100);
+  const transHtml=clf.transient?'<span class="clf-trans M">~</span>':'';
+  return`<div class="nc-clf"><span class="clf-badge M" style="--bc:${color}">${name}</span>${transHtml}<div class="clf-bar-wrap"><div class="clf-bar-fill" style="width:${pct}%;background:${color}"></div></div><span class="clf-bar-pct M" style="color:${color}">${pct}%</span></div>`;
+}
+
 /* -- Theme ------------------------------------------------------- */
 const SUN_PATHS='<circle cx="12" cy="12" r="5"/><line x1="12" y1="1" x2="12" y2="3"/><line x1="12" y1="21" x2="12" y2="23"/><line x1="4.22" y1="4.22" x2="5.64" y2="5.64"/><line x1="18.36" y1="18.36" x2="19.78" y2="19.78"/><line x1="1" y1="12" x2="3" y2="12"/><line x1="21" y1="12" x2="23" y2="12"/><line x1="4.22" y1="19.78" x2="5.64" y2="18.36"/><line x1="18.36" y1="5.64" x2="19.78" y2="4.22"/>';
 const MOON_PATH='<path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/>';
@@ -195,7 +211,7 @@ function onMsg(m){
     const prevRs=prev?prev.relayState:undefined;
     if(n.relayState===1){delete relayOffAt[n.id];}
     else if(n.relayState===0&&prevRs!==0){relayOffAt[n.id]=Date.now();}
-    const o={id:n.id,label:n.label,online:n.online,rssi:n.rssi,voltage:n.voltage,current:n.current,power:n.power,energy:n.energy,frequency:n.frequency,powerFactor:n.powerFactor,relayState:n.relayState,relayMode:n.relayMode,schedState:n.schedState,alarmState:n.alarmState,age:n.age,pending:n.pending,hasSched:n.hasSched,schedStart:n.schedStart,schedEnd:n.schedEnd};
+    const o={id:n.id,label:n.label,online:n.online,rssi:n.rssi,voltage:n.voltage,current:n.current,power:n.power,energy:n.energy,frequency:n.frequency,powerFactor:n.powerFactor,relayState:n.relayState,relayMode:n.relayMode,schedState:n.schedState,alarmState:n.alarmState,age:n.age,pending:n.pending,hasSched:n.hasSched,schedStart:n.schedStart,schedEnd:n.schedEnd,classifier:n.classifier};
     const i=NC.findIndex(x=>x.id===n.id);if(i>=0)Object.assign(NC[i],o);else NC.push(o);
     if(!cNid)renderGrid(NC);
     if(cNid===n.id){updateDetail(o);addChartPoint(n);}
@@ -262,13 +278,20 @@ function renderGrid(ns){
     const al=n.alarmState||n.alarm||0;
     const rw=n.online&&rs===0&&(n.power||0)>RELAY_WARN_W&&(Date.now()-(relayOffAt[n.id]||Date.now()))>SUPERFRAME_MS;
     const faved=isFav(n.id);
-    const fp=`${n.label}|${n.online}|${(n.voltage||0).toFixed(1)}|${(n.current||0).toFixed(2)}|${fP(n.power||0)}|${rs}|${al}|${rw}|${faved}|${n.rssi}`;
+    const clf=n.classifier;
+    const clfKey=!clf?'u':!clf.supported?'u':clf.pending?'p':`${clf.classId}c${clf.confidence}t${clf.transient?1:0}`;
+    const fp=`${n.label}|${n.online}|${(n.voltage||0).toFixed(1)}|${(n.current||0).toFixed(2)}|${fP(n.power||0)}|${rs}|${al}|${rw}|${faved}|${n.rssi}|${clfKey}`;
     if(c._fp!==fp){
       c._fp=fp;
       c.classList.toggle('alarm',!!al);
       c.classList.toggle('relay-warn',rw&&!al);
       c.classList.toggle('offline',!n.online);
       const bars=rssiToBars(n.rssi||0);
+      const clfInline=clf&&clf.supported
+        ?(clf.pending
+          ?'<span class="clf-pending M" style="font-size:9px">Analyzing...</span>'
+          :`<span class="clf-badge M" style="--bc:${CLF_COLORS[clf.classId]||'#8892a4'}">${CLF_NAMES[clf.classId]||'Unknown'}</span>`)
+        :'';
       c.innerHTML=`
         <button class="fav-star ${faved?'faved':''}" onclick="toggleFav(${n.id},event)">${faved?'★':'☆'}</button>
         <div class="nc-head">
@@ -276,7 +299,10 @@ function renderGrid(ns){
             <div class="nc-id M">Node #${n.id}</div>
             <div class="nc-label">${esc(n.label)}</div>
           </div>
-          <span class="nc-status ${n.online?'on':'off'} M">${n.online?'ONLINE':'OFFLINE'}</span>
+          <div style="display:flex;flex-direction:column;align-items:flex-end;gap:5px">
+            <span class="nc-status ${n.online?'on':'off'} M">${n.online?'ONLINE':'OFFLINE'}</span>
+            ${clfInline}
+          </div>
         </div>
         <div class="nc-metrics">
           <div class="nc-metric">
@@ -410,7 +436,38 @@ function updateDetail(d){
   $('costRate2').textContent='@ '+costRate.toFixed(2)+' / kWh';
   $('costEnergy').textContent=(d.energy||0)+' Wh';
 
-
+  // Classifier panel
+  const clfPan=$('clfPanel');
+  if(clfPan){
+    const clf=d.classifier;
+    if(!clf||!clf.supported){
+      clfPan.style.display='none';
+    }else{
+      clfPan.style.display='';
+      if(clf.pending){
+        $('clfClass').textContent='Analyzing...';
+        $('clfClass').style.color='var(--txd)';
+        const ce=$('clfConf');if(ce)ce.innerHTML='';
+        const ct=$('clfTrans');if(ct)ct.style.display='none';
+      }else{
+        const name=CLF_NAMES[clf.classId]||'Unknown';
+        const color=CLF_COLORS[clf.classId]||'#8892a4';
+        $('clfClass').textContent=name;
+        $('clfClass').style.color=color;
+        const ce=$('clfConf');
+        const ct=$('clfTrans');
+        if(clf.classId===6){
+          if(ce)ce.innerHTML='';
+          if(ct)ct.style.display='none';
+        }else{
+          const conf=Math.min(7,Math.max(0,clf.confidence||0));
+          const pct=Math.round(conf/7*100);
+          if(ce){ce.innerHTML=`<div class="clf-bar-wrap"><div class="clf-bar-fill" style="width:${pct}%;background:${color}"></div></div><span class="clf-bar-pct M" style="color:${color}">${pct}%</span>`;}
+          if(ct)ct.style.display=clf.transient?'':'none';
+        }
+      }
+    }
+  }
 }
 
 /* -- Relay controls ---------------------------------------------- */

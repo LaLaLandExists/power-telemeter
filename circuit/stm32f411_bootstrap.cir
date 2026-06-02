@@ -1,0 +1,213 @@
+* Power Telemeter -- STM32F411CEU6 Bootstrap Circuit
+* WeAct Black Pill (UFQFPN48) minimum working circuit.
+*
+* Covers:
+*   VDD supply decoupling  -- 4 x 100 nF (per pin) + 4.7 uF bulk
+*   VCAP_1 LDO bypass      -- 2.2 uF (internal 1.2 V core regulator; critical)
+*   VDDA analog filter     -- 600 Ohm ferrite bead + 1 uF + 10 nF
+*   NRST glitch filter     -- 100 nF (with internal 40 kOhm pull-up, RC = 4 ms)
+*   BOOT0 pull-down        -- 10 kOhm to GND (Flash boot); add button to VDD for DFU
+*   25 MHz HSE crystal     -- Butterworth-Van Dyke model + 22 pF load caps
+*
+* Subcircuits:
+*   XTAL25M      -- 25 MHz crystal equivalent circuit (Rm, Lm, Cm, C0)
+*   FERRITE600   -- 600 Ohm @ 100 MHz ferrite bead (3-element LR)
+*   STM32F411CE  -- Package pin frame: documented external-facing parasitics only
+*                   (VCAP LDO output Z, NRST pull-up, OSC_IN Cin, BOOT0 input Z)
+*
+* Pin assignments used in this project (node_stm32* builds):
+*   LoRa SX1278:  NSS=PB12  SCK=PB13  MISO=PB14  MOSI=PB15  DIO0=PB0  RST=PB1
+*   PZEM-004T:    TX=PA2  RX=PA3  (USART2)
+*   ADS131M02:    SCK=PB13  MISO=PB14  MOSI=PB15  CS=TBD  DRDY=TBD  RST=TBD
+*   Relay:        PA8
+*   LED green:    PC13 (onboard, active LOW)
+*   LED red:      PB5
+*   Button:       PA0 (active LOW, internal pull-up)
+*   SWD:          SWDIO=PA13  SWCLK=PA14
+*   USB DFU:      DM=PA11  DP=PA12
+
+.title STM32F411CEU6 Bootstrap -- Minimum Working Circuit
+
+* ---------------------------------------------------------------
+* XTAL25M -- 25 MHz crystal Butterworth-Van Dyke equivalent
+* Ports: p (OSC_IN side), n (OSC_OUT side)
+*
+* Parameters (typical 25 MHz SMD fundamental-mode crystal):
+*   Rm  = 40 Ohm      motional resistance (ESR)
+*   Lm  = 12.73 mH    motional inductance
+*   Cm  = 3.18 fF     motional capacitance
+*   C0  = 4 pF        parallel (package + electrode) capacitance
+*
+* Series resonance:   fs = 1/(2*pi*sqrt(Lm*Cm))  = 25.00 MHz
+* Parallel resonance: fp = fs*sqrt(1 + Cm/C0)    = 25.01 MHz
+* Q factor:           Q  = 2*pi*fs*Lm/Rm          = 49 930
+* ---------------------------------------------------------------
+.subckt XTAL25M p n
+  Rm   p     xm1  40
+  Lm   xm1   xm2  12.73m
+  Cm   xm2   n    3.18f
+  C0   p     n    4p
+.ends XTAL25M
+
+* ---------------------------------------------------------------
+* FERRITE600 -- 600 Ohm @ 100 MHz ferrite bead
+* 3-element model: Rdc in series with (Rbead || Lbead)
+*
+*   Rdc   = 0.1 Ohm   DC resistance
+*   Rbead = 848 Ohm   AC loss element
+*   Lbead = 1.35 uH   low-frequency inductance
+*
+* Impedance profile:
+*   DC:       Z ~= Rdc = 0.1 Ohm
+*   1 MHz:    Z ~= Rdc + 8.5 Ohm
+*   100 MHz:  Z ~= Rdc + 600 Ohm  (target rating)
+* ---------------------------------------------------------------
+.subckt FERRITE600 p n
+  Rdc    p    fb1  0.1
+  Rbead  fb1  n    848
+  Lbead  fb1  n    1.35u
+.ends FERRITE600
+
+* ---------------------------------------------------------------
+* STM32F411CE -- package pin frame (UFQFPN48, 7 x 7 mm)
+*
+* Ports (power):    vdd1..vdd4  four VDD pins (1.7-3.6 V)
+*                   vss         VSS (and exposed pad EP)
+*                   vcap        VCAP_1: internal LDO output (1.2 V); 2.2 uF ext. cap required
+*                   vdda        analog supply (tie to VDD via ferrite bead)
+*                   vssa        analog GND (tie to VSS)
+* Ports (boot):     nrst        reset input; internal 40 kOhm pull-up; 100 nF ext. filter cap
+*                   boot0       boot mode select; pull low for Flash boot
+* Ports (clock):    osc_in      HSE crystal input  (PH0-OSC_IN)
+*                   osc_out     HSE crystal output (PH1-OSC_OUT)
+*                   osc32_in    LSE 32.768 kHz input  (PC14-OSC32_IN; optional)
+*                   osc32_out   LSE 32.768 kHz output (PC15-OSC32_OUT; optional)
+*
+* Only documented external-facing parasitics are modelled here:
+*   R_ldo_out  -- VCAP_1 LDO output impedance (~0.5 Ohm from datasheet)
+*   R_nrst_pu  -- NRST internal weak pull-up  (~40 kOhm typical)
+*   Cin_hse    -- OSC_IN inverter input capacitance (~5 pF typical)
+*   Rfb_hse    -- HSE internal feedback resistor (~1 MOhm, bias inverter in linear region)
+*   R_boot0_in -- BOOT0 digital input impedance (~200 kOhm)
+*
+* VCAP_1 NOTE: this pin is the OUTPUT of the internal LDO. Never connect to VDD.
+* The 2.2 uF external capacitor (C_vcap in the top-level circuit below) is the
+* LDO stability compensation capacitor. Omitting it causes core voltage oscillation.
+* ---------------------------------------------------------------
+.subckt STM32F411CE vdd1 vdd2 vdd3 vdd4 vss vcap vdda vssa nrst boot0 osc_in osc_out osc32_in osc32_out
+
+  * VCAP_1: LDO output impedance. External 2.2 uF connects vcap to vss.
+  * R_ldo_out separates the ideal internal 1.2 V node from the physical pin.
+  R_ldo_out   vcap_int  vcap   0.5
+
+  * NRST: internal weak pull-up. External 100 nF connects nrst to vss.
+  R_nrst_pu   vdd1      nrst   40k
+
+  * HSE oscillator: input cap and internal feedback resistor.
+  * Rfb_hse biases the CMOS inverter into the linear region at startup.
+  Cin_hse     osc_in    vss    5p
+  Rfb_hse     osc_out   osc_in 1Meg
+
+  * BOOT0: high-impedance digital input, sampled on NRST rising edge.
+  R_boot0_in  boot0     vss    200k
+
+.ends STM32F411CE
+
+* ===============================================================
+* TOP-LEVEL BOOTSTRAP CIRCUIT
+* ===============================================================
+
+* --- Supply rail (3.3 V) ---
+* Provided externally by an LDO (e.g. AMS1117-3.3 or ME6211C33).
+* Node vdd3v3 is the output of that regulator.
+V_supply  vdd3v3  gnd  3.3
+
+* --- STM32F411CEU6 instance ---
+* All four VDD pins tied to vdd3v3; VSS and VSSA to gnd.
+* LSE crystal pins osc32_in/osc32_out left open here (add 32.768 kHz
+* crystal + 12.5 pF load caps if RTC accuracy is required).
+XMCU  vdd3v3 vdd3v3 vdd3v3 vdd3v3  gnd  vcap  vdda  gnd  nrst  boot0  osc_in osc_out  osc32_in osc32_out  STM32F411CE
+
+* ---------------------------------------------------------------
+* VDD DECOUPLING
+* 4 x 100 nF ceramic (0402 X7R), one per VDD pin, as close to
+* each pin as possible on the PCB.  4.7 uF bulk cap on the rail.
+* ---------------------------------------------------------------
+C_vdd1  vdd3v3  gnd  100n   ; VDD pin 1  (UFQFPN48 pin 1)
+C_vdd2  vdd3v3  gnd  100n   ; VDD pin 24
+C_vdd3  vdd3v3  gnd  100n   ; VDD pin 36
+C_vdd4  vdd3v3  gnd  100n   ; VDD pin 48
+C_bulk  vdd3v3  gnd  4.7u   ; bulk bypass, 0805 X5R
+
+* ---------------------------------------------------------------
+* VCAP_1 -- INTERNAL LDO BYPASS (CRITICAL)
+* 2.2 uF, 0402 X5R ceramic, low ESR (< 500 mOhm).
+* This is the stability capacitor for the internal 1.2 V core LDO.
+* Without it the core voltage oscillates and the chip will not run.
+* ---------------------------------------------------------------
+C_vcap  vcap  gnd  2.2u
+
+* ---------------------------------------------------------------
+* VDDA ANALOG SUPPLY FILTER
+* Ferrite bead (FERRITE600) isolates VDDA from VDD digital noise.
+* 1 uF + 10 nF on the VDDA side; VSSA tied to GND.
+* ---------------------------------------------------------------
+XFBEAD   vdd3v3  vdda  FERRITE600
+C_vdda1  vdda    gnd   1u     ; low-frequency VDDA bypass
+C_vdda2  vdda    gnd   10n    ; high-frequency VDDA bypass
+
+* ---------------------------------------------------------------
+* NRST GLITCH FILTER
+* 100 nF from NRST to GND.  Combined with the MCU internal 40 kOhm
+* pull-up (R_nrst_pu in the subcircuit), the RC filter time constant
+* is 40k x 100n = 4 ms.  Any NRST pulse shorter than ~0.1 ms is
+* attenuated by > 20 dB before reaching the reset comparator.
+* Add a momentary push-button from nrst to gnd for manual reset.
+* ---------------------------------------------------------------
+C_nrst  nrst  gnd  100n
+
+* ---------------------------------------------------------------
+* BOOT0 -- FLASH BOOT PULL-DOWN
+* 10 kOhm pull-down to GND.  BOOT0 is sampled on the rising edge
+* of NRST; keeping it low selects boot from main Flash (normal).
+* Add a momentary push-button from boot0 to vdd3v3 to enter the
+* ST USB DFU bootloader (PA11/PA12 enumerate as DFU device).
+* ---------------------------------------------------------------
+R_boot0_pd  boot0  gnd  10k
+
+* ---------------------------------------------------------------
+* 25 MHz HSE CRYSTAL + LOAD CAPS
+*
+* XTAL25M: Butterworth-Van Dyke model (see subcircuit above).
+* Load caps: 22 pF (X5R NPO 0402) on each crystal pin.
+*
+* Load cap selection: C_ext = 2*(C_L - C_stray)
+*   For C_L = 10 pF (typical SMD crystal) and C_stray = 4-5 pF:
+*     C_ext = 2*(10 - 4) = 12 pF minimum; 22 pF includes PCB stray.
+*   Verify against crystal datasheet C_L spec; over-loading pulls
+*   frequency low and increases startup time.
+*
+* Optional series resistor (0-33 Ohm) on osc_in limits inverter
+* overdrive current for CMOS crystals; omit if startup is slow.
+* ---------------------------------------------------------------
+XXTAL   osc_in  osc_out  XTAL25M
+C_osc1  osc_in  gnd  22p
+C_osc2  osc_out gnd  22p
+
+* ---------------------------------------------------------------
+* SWD PROGRAMMING HEADER (structural -- no passive components)
+* Connect a 4-pin 2.54 mm header: SWDIO=PA13, SWCLK=PA14, GND, VDD.
+* Do not place strong pull-up or pull-down on PA13/PA14 -- SWD
+* uses these pins and conflicts with external drive.
+* Optional 5th pin: nrst for hard-reset during flashing.
+* ---------------------------------------------------------------
+
+* ---------------------------------------------------------------
+* USB DFU (optional)
+* PA11=USB_DM, PA12=USB_DP.  Add TVS diodes (e.g. PRTR5V0U2X)
+* on DP/DM to GND for ESD protection on any deployed board.
+* The ST DFU ROM handles USB enumeration when BOOT0 is high;
+* no external pull-up on DP is needed (internal pull-up in F411).
+* ---------------------------------------------------------------
+
+.end

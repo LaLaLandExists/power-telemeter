@@ -16,7 +16,7 @@
 // -----------------------------------------------------------------------------
 // Network constants
 // -----------------------------------------------------------------------------
-#define FW_VERSION          1
+#define FW_VERSION          2   // v2: TelemetryPacket expanded to 33 bytes (classByte added)
 #define MAX_NODES           8
 #define N_CHANNELS          8
 #define LORA_SYNC_WORD      0x12    // Private network (not LoRaWAN 0x34)
@@ -59,8 +59,9 @@ static const float LORA_CHANNELS[N_CHANNELS] = {
 //   Guard      : 15 ms  (SX1278 mode-switch <1 ms; 15 ms covers FreeRTOS tick budget)
 //
 // UL window is intentionally NOT reduced: the node's TX start lags the gateway's
-// RX open by beacon-arrival latency (~2-5 ms) + radio setup overhead.  The 20 ms
-// pad over TelemetryPacket airtime (~34 ms) has been observed as necessary.
+// RX open by beacon-arrival latency (~2-5 ms) + radio setup overhead.
+// TelemetryPacket airtime at SF6/125kHz/CR4:5 = ~38.5 ms (63 payload symbols);
+// 33-byte packet occupies the same symbol count as 32 bytes (264 is divisible by 24).
 //
 // The 360 ms IDLE_MS recovered from tighter slots is placed after the contention
 // window.  The gateway uses it for maintenance (eviction, FRAM writes); the node
@@ -129,7 +130,7 @@ static const uint8_t GFSK_SYNC_WORD[3] = {0xB5, 0x4A, 0x7E};
 // -----------------------------------------------------------------------------
 // Packet type IDs
 // -----------------------------------------------------------------------------
-#define PKT_TELEMETRY           0x01    // Node -> GW,   32 bytes
+#define PKT_TELEMETRY           0x01    // Node -> GW,   33 bytes
 #define PKT_RELAY_MANUAL        0x02    // GW   -> Node,  3 bytes (DlHeader + relayState)
 #define PKT_RELAY_SCHEDULE      0x03    // GW   -> Node,  7 bytes (DlHeader + 5)
 #define PKT_BEACON              0x04    // GW   -> All,   8 bytes
@@ -211,8 +212,14 @@ struct TelemetryPacket {
   uint8_t  seqCounter;
   uint8_t  beaconRSSI;       // int8 cast to uint8 -- RSSI of last beacon (dBm)
   uint8_t  fwVersion;        // Firmware version
+  // Load classifier result (AFE nodes only).
+  // Bit layout: [2:0] classId (0-6), [5:3] confidence (0-7), [6] transient, [7] reserved.
+  // Sentinel 0xFF = no classifier hardware (PZEM/fake builds).
+  // Sentinel 0x40 = classifier warming up (AFE, smoothing window not yet full).
+  // Value   0x3E = relay off / cold load (CLASS_BYTE_NONE: class=6, conf=7, transient=0).
+  uint8_t  classByte;
 };
-static_assert(sizeof(TelemetryPacket) == 32, "TelemetryPacket must be 32 bytes");
+static_assert(sizeof(TelemetryPacket) == 33, "TelemetryPacket must be 33 bytes");
 
 /**
  * DlHeader (2 bytes) -- base for every gateway->node downlink packet.
@@ -322,6 +329,28 @@ struct JoinAckPacket {
 // SF6 implicit header requires a fixed receive length; all DL frames are
 // zero-padded to this size so every slot DL window uses one implicitHeader() call.
 #define MAX_DL_PAYLOAD_LEN  sizeof(RelaySchedulePacket)
+
+// -----------------------------------------------------------------------------
+// classByte sentinels and decode helper
+// -----------------------------------------------------------------------------
+
+// Emitted by PZEM and fake-meter builds: no classifier hardware present.
+#define CLASS_BYTE_UNSUPPORTED  0xFFu
+
+// Emitted by AFE builds while the 5-sample smoothing window is filling (first ~10 s).
+// Encoding: transient bit set (bit 6), confidence = 0, classId = 0.
+#define CLASS_BYTE_PENDING      0x40u
+
+// Emitted immediately when irms < minIrms (relay open or no load connected).
+// Encoding: classId=6 (LOAD_NONE), confidence=7, transient=0 -> (6 | (7<<3)) = 0x3E.
+// Bypasses the smoother ring buffer so the state is reflected instantly.
+#define CLASS_BYTE_NONE         0x3Eu
+
+inline void unpackClassByte(uint8_t b, uint8_t& classId, uint8_t& conf, bool& trans) {
+  classId = b & 0x07u;
+  conf    = (b >> 3) & 0x07u;
+  trans   = (bool)((b >> 6) & 0x01u);
+}
 
 // -----------------------------------------------------------------------------
 // Status byte helpers

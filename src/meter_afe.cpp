@@ -35,6 +35,7 @@
 
 #include "meter.h"
 #include "classifier_features.h"
+#include "load_classifier.h"
 #include "hal/hal_ads131.h"
 #include "hal/hal_fft.h"
 #include "hal/hal_nvs.h"
@@ -155,6 +156,8 @@ static float  s_filterComp[10];
 static float  s_fftBuf[FFT_N * 2]; // complex interleaved [Re0, Im0, Re1, Im1, ...]
 
 static double s_energyAccWh = 0.0; // double for long-run precision (see design doc sec 3.5)
+
+static ClassifierState s_clfState;
 
 // =============================================================================
 // Shared globals
@@ -417,6 +420,19 @@ static void runHarmonicAnalysis() {
     xSemaphoreGive(g_featuresMutex);
   }
 
+  // Classify -- uses local feat and irms_snap; no mutex needed.
+  // g_classByte is uint8_t; single-byte write is atomic on ESP32/STM32.
+  ClassResult raw = classifyLoad(feat, irms_snap, DEFAULT_THRESHOLDS);
+  if (raw.classId == LOAD_NONE) {
+    // Mechanical relay guarantees open circuit; state is unambiguous.
+    // Bypass the smoother so the dashboard reflects off-state immediately.
+    // The ring buffer is NOT updated, preserving the prior class for relay-on restart.
+    g_classByte = CLASS_BYTE_NONE;
+  } else {
+    classifierUpdate(s_clfState, raw);
+    g_classByte = packClassByte(s_clfState);
+  }
+
   // Sanity: ZC and FFT frequency estimates should agree to within 2 Hz
   float diff = fftFreq - s_freq.freqAvg;
   if (diff < 0.0f) diff = -diff;
@@ -468,6 +484,7 @@ void meterTaskFn(void* /*params*/) {
   s_freq.init();
   s_acc      = CycleAccumulator{};
   s_zcPending = false;
+  classifierStateInit(s_clfState);
 
   // g_featuresMutex is AFE-only; create it here before first FFT cycle
   g_featuresMutex = xSemaphoreCreateMutex();

@@ -46,6 +46,11 @@ bool     g_nodeRegistered = false;
 uint8_t  g_nodeSlotId     = 0;
 uint16_t g_nodeUID        = 0;
 
+// Classifier result byte.  Written by meterTaskFn (METER_AFE builds) via packClassByte()
+// at the end of each 2-second FFT cycle.  PZEM and fake builds never write here,
+// so CLASS_BYTE_UNSUPPORTED is always transmitted by those builds.
+uint8_t  g_classByte      = CLASS_BYTE_UNSUPPORTED;
+
 uint8_t  g_relayState = 0;
 uint8_t  g_relayMode  = 0;
 uint8_t  g_schedState = 0;
@@ -314,6 +319,7 @@ void buildTelemetryPacket(TelemetryPacket& pkt) {
   s_dlAck        = false;
   pkt.beaconRSSI = (uint8_t)(int8_t)s_beaconRSSI;
   pkt.fwVersion  = FW_VERSION;
+  pkt.classByte  = g_classByte;
 }
 
 // =============================================================================

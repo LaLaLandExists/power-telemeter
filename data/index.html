@@ -559,6 +559,24 @@
       <!-- Right sidebar -->
       <div class="side-col">
 
+        <!-- Load classifier (hidden for PZEM/unsupported nodes) -->
+        <div class="panel" id="clfPanel" style="display:none">
+          <div class="panel-head">
+            <span class="panel-title">Load Classification</span>
+          </div>
+          <div class="panel-body">
+            <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-bottom:6px">
+              <span id="clfClass" class="M" style="font-size:20px;font-weight:700">--</span>
+              <span id="clfConf" style="display:flex;gap:6px;align-items:center;flex:1;min-width:0"></span>
+            </div>
+            <div id="clfTrans" style="display:none;font-size:10px;color:var(--wn)" class="M">
+              <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" style="margin-right:3px;vertical-align:middle"><path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>
+              Transient &mdash; classification may be unstable
+            </div>
+            <div style="font-size:10px;color:var(--txd);font-family:'JetBrains Mono',monospace;margin-top:8px;line-height:1.6">Classification inspects I-V waveform characteristics. If the node class changes unexpectedly, check the connected load.</div>
+          </div>
+        </div>
+
         <!-- Relay control -->
         <div class="panel" id="relayPanel">
           <div class="panel-head">

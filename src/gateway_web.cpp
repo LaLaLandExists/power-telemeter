@@ -148,6 +148,28 @@ static void nodeToSummaryJson(JsonObject obj, const NodeState &ns)
 
   bool hasSched = (ns.relayMode == 1 && ns.schedState > 0);
   obj["hasSched"] = hasSched;
+
+  // Load classifier
+  JsonObject clf = obj["classifier"].to<JsonObject>();
+  if (ns.classByte == CLASS_BYTE_UNSUPPORTED) {
+    clf["supported"] = false;
+  } else {
+    uint8_t classId, conf;
+    bool trans;
+    unpackClassByte(ns.classByte, classId, conf, trans);
+    bool pending = (trans && conf == 0);
+    clf["supported"] = true;
+    clf["pending"]   = pending;
+    if (!pending) {
+      static const char* const CLASS_NAMES[6] = {
+        "Resistive", "Capacitive", "Motor", "Fan", "SMPS", "Lighting"
+      };
+      clf["classId"]    = classId;
+      clf["className"]  = (classId < 6) ? CLASS_NAMES[classId] : "Unknown";
+      clf["confidence"] = conf;
+      clf["transient"]  = trans;
+    }
+  }
 }
 
 /** Populate a JsonObject with full detail fields (used by /api/node/{id}/live and telemetry push). */

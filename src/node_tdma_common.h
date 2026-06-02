@@ -24,6 +24,10 @@ extern bool     g_nodeRegistered;
 extern uint8_t  g_nodeSlotId;
 extern uint16_t g_nodeUID;
 
+// Load classifier result byte written by the AFE meter task (METER_AFE builds).
+// Defaults to CLASS_BYTE_UNSUPPORTED so PZEM/fake builds transmit the correct sentinel.
+extern uint8_t  g_classByte;
+
 extern uint8_t  g_relayState;   // 0=OFF, 1=ON
 extern uint8_t  g_relayMode;    // 0=MANUAL, 1=SCHEDULED
 extern uint8_t  g_schedState;   // 0=NONE, 1=WAITING, 2=ACTIVE

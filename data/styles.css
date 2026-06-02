@@ -636,6 +636,28 @@ body::before{
 .log-filter-chip:hover{border-color:var(--ac);color:var(--tx)}
 .log-filter-chip.suppressed{opacity:.28}
 
+/* -- Load classifier badge ---------------------------------------- */
+.nc-clf{
+  padding:4px 12px 6px;
+  display:flex;align-items:center;gap:6px;
+  border-top:1px solid var(--bd);
+  min-height:26px;
+}
+.clf-badge{
+  font-size:10px;padding:2px 9px;border-radius:10px;
+  background:color-mix(in srgb,var(--bc) 14%,transparent);
+  border:1px solid color-mix(in srgb,var(--bc) 35%,transparent);
+  color:var(--bc);letter-spacing:.3px;
+}
+.clf-pending{
+  font-size:10px;color:var(--txd);
+  animation:pu 1.5s ease-in-out infinite;
+}
+.clf-bar-wrap{flex:1;min-width:0;height:5px;border-radius:2px;background:var(--bd);overflow:hidden}
+.clf-bar-fill{height:100%;border-radius:2px;transition:width .4s ease;width:0}
+.clf-bar-pct{font-size:9px;letter-spacing:.3px;min-width:28px}
+.clf-trans{color:var(--wn);font-size:9px;letter-spacing:.2px}
+
 /* -- Responsive ------------------------------------------------ */
 @media(max-width:600px){
   .wrap{padding:12px 14px}

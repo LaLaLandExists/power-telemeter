@@ -343,6 +343,7 @@ static void processUplink(uint8_t slotIdx, const TelemetryPacket& pkt, int16_t r
   ns->rssi       = rssi;
   ns->lastSeen   = millis();
   ns->missedSfs  = 0;
+  ns->classByte  = pkt.classByte;
 
   // Decode status byte
   ns->relayState = decodeRelayState(pkt.statusByte);
