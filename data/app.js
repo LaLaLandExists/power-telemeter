@@ -43,7 +43,7 @@ const RELAY_WARN_W=5;       // watts: relay-off but still drawing power triggers
 const SUPERFRAME_MS=3000;   // grace period before showing relay-ineffective warning
 
 /* -- Classifier -------------------------------------------------- */
-const CLF_NAMES=['Resistive','Capacitive','Motor','Fan','SMPS','Lighting','None'];
+const CLF_NAMES=['Resistive','Capacitive','Motor','Fan','SMPS','Lighting','No Load'];
 const CLF_COLORS=['#8892a4','#4fc3f7','#ff9f43','#06d6a0','#ff6b6b','#ffd166','#4a5568'];
 
 function clfBadgeHtml(clf,full){
@@ -287,11 +287,16 @@ function renderGrid(ns){
       c.classList.toggle('relay-warn',rw&&!al);
       c.classList.toggle('offline',!n.online);
       const bars=rssiToBars(n.rssi||0);
-      const clfInline=clf&&clf.supported
-        ?(clf.pending
-          ?'<span class="clf-pending M" style="font-size:9px">Analyzing...</span>'
-          :`<span class="clf-badge M" style="--bc:${CLF_COLORS[clf.classId]||'#8892a4'}">${CLF_NAMES[clf.classId]||'Unknown'}</span>`)
-        :'';
+      let statusHtml;
+      if(!n.online){
+        statusHtml='<span class="nc-status off M">OFFLINE</span>';
+      }else if(clf&&clf.supported&&!clf.pending&&clf.classId!==undefined){
+        const cName=CLF_NAMES[clf.classId]||'Unknown';
+        const cColor=CLF_COLORS[clf.classId]||'#8892a4';
+        statusHtml=`<span class="nc-status M" style="color:${cColor};background:${cColor}1f;border:1px solid ${cColor}4d">${cName}</span>`;
+      }else{
+        statusHtml='<span class="nc-status on M">ONLINE</span>';
+      }
       c.innerHTML=`
         <button class="fav-star ${faved?'faved':''}" onclick="toggleFav(${n.id},event)">${faved?'★':'☆'}</button>
         <div class="nc-head">
@@ -299,10 +304,7 @@ function renderGrid(ns){
             <div class="nc-id M">Node #${n.id}</div>
             <div class="nc-label">${esc(n.label)}</div>
           </div>
-          <div style="display:flex;flex-direction:column;align-items:flex-end;gap:5px">
-            <span class="nc-status ${n.online?'on':'off'} M">${n.online?'ONLINE':'OFFLINE'}</span>
-            ${clfInline}
-          </div>
+          ${statusHtml}
         </div>
         <div class="nc-metrics">
           <div class="nc-metric">
@@ -456,14 +458,17 @@ function updateDetail(d){
         $('clfClass').style.color=color;
         const ce=$('clfConf');
         const ct=$('clfTrans');
+        const hint=$('clfHint');
         if(clf.classId===6){
           if(ce)ce.innerHTML='';
           if(ct)ct.style.display='none';
+          if(hint)hint.textContent='This node is drawing negligible current - load inference is unavailable';
         }else{
           const conf=Math.min(7,Math.max(0,clf.confidence||0));
           const pct=Math.round(conf/7*100);
           if(ce){ce.innerHTML=`<div class="clf-bar-wrap"><div class="clf-bar-fill" style="width:${pct}%;background:${color}"></div></div><span class="clf-bar-pct M" style="color:${color}">${pct}%</span>`;}
           if(ct)ct.style.display=clf.transient?'':'none';
+          if(hint)hint.textContent='Classification inspects I-V waveform characteristics. If the load class changes unexpectedly, check the connected load.';
         }
       }
     }

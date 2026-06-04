@@ -180,7 +180,7 @@ struct BeaconPacket {
 static_assert(sizeof(BeaconPacket) == 8, "BeaconPacket must be 8 bytes");
 
 /**
- * TelemetryPacket (30 bytes) -- node uplink every superframe.
+ * TelemetryPacket (33 bytes) -- node uplink every superframe.
  * Status byte packs relayState, relayMode, schedState, alarmState.
  *
  * statusByte layout:

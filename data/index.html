@@ -562,7 +562,7 @@
         <!-- Load classifier (hidden for PZEM/unsupported nodes) -->
         <div class="panel" id="clfPanel" style="display:none">
           <div class="panel-head">
-            <span class="panel-title">Load Classification</span>
+            <span class="panel-title">Load Inference</span>
           </div>
           <div class="panel-body">
             <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-bottom:6px">
@@ -573,7 +573,7 @@
               <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" style="margin-right:3px;vertical-align:middle"><path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>
               Transient &mdash; classification may be unstable
             </div>
-            <div style="font-size:10px;color:var(--txd);font-family:'JetBrains Mono',monospace;margin-top:8px;line-height:1.6">Classification inspects I-V waveform characteristics. If the node class changes unexpectedly, check the connected load.</div>
+            <div id="clfHint" style="font-size:10px;color:var(--txd);font-family:'JetBrains Mono',monospace;margin-top:8px;line-height:1.6"></div>
           </div>
         </div>
 
@@ -686,7 +686,7 @@
 	<br>A project presented in partial fulfillment to the requirements of Microprocessors, Microcontrollers, and DE.
 </footer>
 <script src="/app.js"></script>
-<!--script src="/simulation.js"></script> <!-- Comment out this line to switch to production -->
+<script src="/simulation.js"></script> <!-- Comment out this line to switch to production -->
 <script>
 	init();
 </script>
