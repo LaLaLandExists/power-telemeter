@@ -234,7 +234,12 @@ wsSend = function(cmd){
 };
 
 fetchHistory = async function(id){
-  const s=simState.find(x=>x.id===id); if(!s||!chart)return;
+  const s=simState.find(x=>x.id===id); if(!s)return;
+  sparkData.power=[...s._hist.p];
+  sparkData.voltage=[...s._hist.v];
+  sparkData.current=[...s._hist.i];
+  updateSparklines();
+  if(!chart)return;
   const mc=MC[cMet]; const buf=s._hist[mc.k]||[];
   if(!buf.length)return;
   chart.data.labels=buf.map((_,i)=>{ const sec=(buf.length-1-i)*(SIM_TICK_MS/1000); return sec>60?Math.floor(sec/60)+'m':sec+'s'; });

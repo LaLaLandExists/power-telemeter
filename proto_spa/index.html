@@ -135,7 +135,7 @@
         <div class="kpi-card" style="--kc:var(--wn)">
           <div class="kpi-top">
             <div class="kpi-icon" aria-hidden="true">
-              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="12" y1="1" x2="12" y2="23"/><path d="M17 5H9.5a3.5 3.5 0 0 0 0 7h5a3.5 3.5 0 0 1 0 7H6"/></svg>
+              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20.59 13.41l-7.17 7.17a2 2 0 0 1-2.83 0L2 12V2h10l8.59 8.59a2 2 0 0 1 0 2.82z"/><line x1="7" y1="7" x2="7.01" y2="7"/></svg>
             </div>
             <div class="kpi-val M" id="kpiCostToday">--</div>
             <button class="btn btn-danger M" onclick="promptClearAllEnergy(this)" style="margin-top:0;margin-left:auto;font-size:10px;padding:3px 8px;width:auto;flex-shrink:0">
@@ -188,24 +188,24 @@
 
       <!-- Metric cards -->
       <div class="metric-grid" role="region" aria-label="Live measurements">
-        <div class="metric-card" style="--cc:var(--volt)">
+        <div class="metric-card has-spark" style="--cc:var(--volt)" onclick="expandMetric('voltage')" role="button" tabindex="0" aria-label="Voltage — click to expand chart">
           <div class="metric-lbl">Voltage</div>
           <div class="metric-val M"><span id="dV">--</span><span class="metric-unit">V</span></div>
-          <div class="metric-bar" role="progressbar" aria-label="Voltage level"><div class="metric-bar-fill" id="bV"></div></div>
+          <div class="metric-spark" id="sparkV"></div>
         </div>
-        <div class="metric-card" style="--cc:var(--amp)">
+        <div class="metric-card has-spark" style="--cc:var(--amp)" onclick="expandMetric('current')" role="button" tabindex="0" aria-label="Current — click to expand chart">
           <div class="metric-lbl">Current</div>
-          <div class="metric-val M"><span id="dI">--</span><span class="metric-unit">A</span></div>
-          <div class="metric-bar" role="progressbar" aria-label="Current level"><div class="metric-bar-fill" id="bI"></div></div>
+          <div class="metric-val M"><span id="dI">--</span><span class="metric-unit" id="dIu">A</span></div>
+          <div class="metric-spark" id="sparkI"></div>
         </div>
-        <div class="metric-card" id="pwrCard" style="--cc:var(--watt)">
+        <div class="metric-card has-spark" id="pwrCard" style="--cc:var(--watt)" onclick="expandMetric('power')" role="button" tabindex="0" aria-label="Active Power — click to expand chart">
           <div class="metric-lbl">Active Power</div>
           <div class="metric-val M"><span id="dP">--</span><span class="metric-unit">W</span></div>
-          <div class="metric-bar" role="progressbar" aria-label="Power level"><div class="metric-bar-fill" id="bP"></div></div>
           <div class="alarm-tag M" id="alarmTag" role="alert" aria-live="polite">
             <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" aria-hidden="true"><path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>
             Over-power alarm
           </div>
+          <div class="metric-spark" id="sparkP"></div>
         </div>
         <div class="metric-card" style="--cc:var(--nrg)">
           <div class="metric-lbl">Energy</div>
@@ -228,7 +228,7 @@
       <div class="det-bottom">
 
         <!-- Chart panel -->
-        <div class="panel" role="region" aria-label="History chart">
+        <div class="panel" id="det-chart-panel" role="region" aria-label="History chart">
           <div class="panel-head">
             <span class="panel-title">History</span>
             <div style="display:flex;gap:3px" role="group" aria-label="Chart metric selector">

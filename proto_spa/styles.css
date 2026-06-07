@@ -457,6 +457,16 @@ body::before{
 }
 .metric-card.alarm-card{border-color:var(--dg)!important;animation:pu 1.5s infinite}
 .metric-card.alarm-card::before{background:var(--dg)!important}
+.metric-card:not(.has-spark){min-height:108px}
+.metric-card.has-spark{cursor:pointer;min-height:108px;padding-bottom:14px}
+.metric-card.has-spark:hover{transform:translateY(-2px);box-shadow:0 6px 20px rgba(0,0,0,.12)}
+.metric-card.has-spark .metric-lbl,
+.metric-card.has-spark .metric-val{
+  position:relative;z-index:2;
+  text-shadow:0 0 10px var(--sf),0 0 22px var(--sf),0 0 40px var(--sf);
+}
+.metric-spark{position:absolute;bottom:0;left:0;right:0;height:72px;border-radius:0 0 9px 9px;opacity:.45;transition:opacity .2s}
+.metric-card.has-spark:hover .metric-spark{opacity:.7}
 
 .metric-lbl{
   font-size:10px;font-weight:500;text-transform:uppercase;
@@ -466,7 +476,7 @@ body::before{
   font-size:28px;font-weight:700;color:var(--cc,var(--ac));
   line-height:1;font-family:'Fira Code',monospace;
 }
-.metric-unit{font-size:13px;font-weight:400;color:var(--txd);margin-left:3px}
+.metric-unit{font-size:13px;font-weight:600;color:var(--cc,var(--ac));margin-left:3px}
 .metric-bar{margin-top:10px;height:3px;background:var(--sf2);border-radius:2px;overflow:hidden}
 .metric-bar-fill{height:100%;border-radius:2px;background:var(--cc,var(--ac));transition:width .6s ease;width:0}
 .alarm-tag{
@@ -721,7 +731,7 @@ body::before{
 
 /* -- Serial log ----------------------------------- */
 #pg-log.active{display:flex;flex-direction:column;overflow:hidden;min-height:0}
-.page-log .page-inner{
+.page-log.page-inner{
   flex:1;display:flex;flex-direction:column;min-height:0;
   width:100%;padding-bottom:16px;
 }

@@ -53,6 +53,68 @@ const MC={
   voltage:{l:'Voltage (V)',c:'#ffd166', k:'v', n:'voltage'},
   current:{l:'Current (A)',c:'#06d6a0', k:'i', n:'current'}
 };
+const SPARK_MAX=120;
+let sparkData={power:[],voltage:[],current:[]};
+function clearSparkData(){sparkData={power:[],voltage:[],current:[]};}
+function pushSparkPoint(n){
+  const pairs=[['power','p'],['voltage','v'],['current','i']];
+  pairs.forEach(([long,short])=>{
+    const v=n[long]!==undefined?n[long]:n[short];
+    if(v===undefined)return;
+    sparkData[long].push(v);
+    if(sparkData[long].length>SPARK_MAX)sparkData[long].shift();
+  });
+}
+function loadSparkFromHistory(d){
+  sparkData.power=d.map(x=>x.p).filter(v=>v!==undefined);
+  sparkData.voltage=d.map(x=>x.v).filter(v=>v!==undefined);
+  sparkData.current=d.map(x=>x.i).filter(v=>v!==undefined);
+}
+function makeSvgSparkline(vals,color){
+  if(!vals||vals.length<2)return'';
+  // downsample to 60 pts for path length
+  const src=(vals.length>60)?vals.filter((_,i)=>i%Math.ceil(vals.length/60)===0):vals;
+  const dMin=Math.min(...src),dMax=Math.max(...src);
+  // range = larger of natural spread vs 10% of peak
+  // ensures all points fit (no clipping) while small variations don't over-zoom
+  const range=Math.max(dMax-dMin,dMax*0.10)||1;
+  const mid=(dMax+dMin)/2;
+  const dispMin=mid-range/2;
+  const W=200,H=56,PAD_T=8;
+  const pts=src.map((v,i)=>({
+    x:(i/(src.length-1))*W,
+    y:PAD_T+(H-PAD_T)*(1-(v-dispMin)/range)
+  }));
+  // catmull-rom smooth path
+  let line='M '+pts[0].x.toFixed(1)+','+pts[0].y.toFixed(1);
+  for(let i=0;i<pts.length-1;i++){
+    const p0=pts[Math.max(0,i-1)],p1=pts[i],p2=pts[i+1],p3=pts[Math.min(pts.length-1,i+2)];
+    const cp1x=(p1.x+(p2.x-p0.x)/6).toFixed(1),cp1y=(p1.y+(p2.y-p0.y)/6).toFixed(1);
+    const cp2x=(p2.x-(p3.x-p1.x)/6).toFixed(1),cp2y=(p2.y-(p3.y-p1.y)/6).toFixed(1);
+    line+=` C ${cp1x},${cp1y} ${cp2x},${cp2y} ${p2.x.toFixed(1)},${p2.y.toFixed(1)}`;
+  }
+  const fill=line+` L ${W},${H} L 0,${H} Z`;
+  const gid='spg'+color.replace(/[^a-z0-9]/gi,'');
+  return`<svg viewBox="0 0 ${W} ${H}" preserveAspectRatio="none" width="100%" height="100%" aria-hidden="true">`
+    +`<defs><linearGradient id="${gid}" x1="0" y1="0" x2="0" y2="1">`
+    +`<stop offset="0%" stop-color="${color}" stop-opacity="0.25"/>`
+    +`<stop offset="100%" stop-color="${color}" stop-opacity="0"/>`
+    +`</linearGradient></defs>`
+    +`<path d="${fill}" fill="url(#${gid})"/>`
+    +`<path d="${line}" fill="none" stroke="${color}" stroke-width="1.8" stroke-linejoin="round" stroke-linecap="round"/>`
+    +`</svg>`;
+}
+function updateSparklines(){
+  const map=[['sparkV','voltage','#ffd166'],['sparkI','current','#06d6a0'],['sparkP','power','#118ab2']];
+  map.forEach(([id,key,color])=>{
+    const el=$(id);if(el)el.innerHTML=makeSvgSparkline(sparkData[key],color);
+  });
+}
+function expandMetric(key){
+  swChart(key);
+  const panel=$('det-chart-panel');
+  if(panel)panel.scrollIntoView({behavior:'smooth',block:'nearest'});
+}
 const LOG_MAX_LINES=200;
 const LOG_PREFIX_CLASS={
   'GW-UL':'ok','GW-BCN':'ok','GW-DL':'ok','GW-CW':'ok','GW-TDMA':'ok',
@@ -539,6 +601,7 @@ function showDetail(id){
   updateNavActive('overview');
   const bb=$('backBtn');if(bb)bb.style.display='flex';
   cMet='power';
+  clearSparkData();updateSparklines();
   initChart();
   document.querySelectorAll('[data-m]').forEach(b=>{
     const active=b.dataset.m==='power';
@@ -559,7 +622,9 @@ function updateDetail(d){
   if(st){st.textContent=d.online?'ONLINE':'OFFLINE';st.className='panel-badge M '+(d.online?'ac':'dg');}
 
   sT('dV',(d.voltage||0).toFixed(1));
-  sT('dI',(d.current||0).toFixed(3));
+  const curA=d.current||0;
+  if(curA>0&&curA<1){sT('dI',(curA*1000).toFixed(0));sT('dIu','mA');}
+  else{sT('dI',curA.toFixed(3));sT('dIu','A');}
   sT('dP',(d.power||0).toFixed(1));
   if((d.energy||0)>=10000){sT('dE',((d.energy||0)/1000).toFixed(2));sT('dEu','kWh');}
   else{sT('dE',String(d.energy||0));sT('dEu','Wh');}
@@ -828,6 +893,7 @@ function addChartPoint(n){
   const sfS=Math.round(SUPERFRAME_MS/1000);
   chart.data.labels=ds.data.map((_,i)=>{const s=(ds.data.length-1-i)*sfS;return s>60?Math.floor(s/60)+'m':s+'s';});
   chart.update('none');
+  pushSparkPoint(n);updateSparklines();
 }
 
 async function fetchHistory(id){
@@ -840,6 +906,7 @@ async function fetchHistory(id){
     chart.data.labels=d.map((_,i)=>{const s=(d.length-1-i)*sfS;return s>60?Math.floor(s/60)+'m':s+'s';});
     chart.data.datasets[0].data=d.map(x=>x[mc.k]);
     chart.update('none');
+    loadSparkFromHistory(d);updateSparklines();
   }catch(e){}
 }
 
