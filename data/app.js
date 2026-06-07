@@ -19,6 +19,7 @@ function clearEnergyAnchor(id){
   delete energyAnchor[id];
   try{localStorage.removeItem(_eaKey(id));}catch(e){}
 }
+const MIN_DELTA_WH=5; // require 5 Wh before trusting rate -- prevents 1 Wh integer ticks over short windows from blowing up the estimate
 // Returns {cph, state:'waiting'|'converging'|'ready'}
 function getEnergyRateInfo(id,currentWh,online){
   if(!online)return{cph:null,state:'waiting'};
@@ -27,8 +28,10 @@ function getEnergyRateInfo(id,currentWh,online){
   if(currentWh<a.wh){clearEnergyAnchor(id);return{cph:null,state:'waiting'};}
   const elapsedMs=Date.now()-a.ts;
   if(elapsedMs<3000)return{cph:null,state:'waiting'};
+  const deltaWh=currentWh-a.wh;
+  if(deltaWh<MIN_DELTA_WH)return{cph:null,state:'converging'};
   const elapsedH=elapsedMs/3600000;
-  const cph=((currentWh-a.wh)/elapsedH/1000)*costRate;
+  const cph=(deltaWh/elapsedH/1000)*costRate;
   const state=elapsedMs<CONVERGE_MS?'converging':'ready';
   return{cph,state};
 }
@@ -698,7 +701,8 @@ function updateDetail(d){
   const extrapMult=[1,24,24*7,24*30];
   extrapEls.forEach((id,i)=>{
     const el=$(id);if(!el)return;
-    if(cph===null){el.textContent='--';el.classList.add('cost-val-pending');}
+    // suppress day/week/month while converging -- small deltas amplify wildly when multiplied by 168-720
+    if(cph===null||( rateState==='converging'&&i>0)){el.textContent='--';el.classList.add('cost-val-pending');}
     else{el.textContent=(cph*extrapMult[i]).toFixed(2);el.classList.remove('cost-val-pending');}
   });
 
