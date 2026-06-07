@@ -112,7 +112,7 @@ function simTick(){
   });
 
   const nodes=simState.map(nodeSnapshot);
-  nodes.forEach(n=>{ const i=NC.findIndex(x=>x.id===n.id); if(i>=0)Object.assign(NC[i],n); else NC.push(n); });
+  nodes.forEach(n=>{ const i=NC.findIndex(x=>x.id===n.id); if(i>=0)Object.assign(NC[i],n); else NC.push(n); recordEnergyAnchor(n.id,n.energy||0); });
   if(!cNid)renderGrid(NC);
   if(cNid){ const s=simState.find(x=>x.id===cNid); if(s){ updateDetail(nodeSnapshot(s)); addChartPoint({p:s.power,v:s.voltage,i:s.current,power:s.power,voltage:s.voltage,current:s.current}); } }
   const cnt=simState.filter(s=>s.online).length;
@@ -217,9 +217,9 @@ wsSend = function(cmd){
         if(cNid===cmd.node)updateDetail(nodeSnapshot(s)); },400); break;
     }
     case 'clear_energy':{
-      const s=simState.find(x=>x.id===cmd.node); if(s){s.energy=0;} break;
+      const s=simState.find(x=>x.id===cmd.node); if(s){s.energy=0;clearEnergyAnchor(cmd.node);} break;
     }
-    case 'clear_all_energy':{ simState.forEach(s=>s.energy=0); break; }
+    case 'clear_all_energy':{ simState.forEach(s=>s.energy=0);Object.keys(energyAnchor).forEach(clearEnergyAnchor); break; }
     case 'rename':{
       const s=simState.find(x=>x.id===cmd.node); if(!s)break;
       s.label=cmd.name; const n=NC.find(x=>x.id===cmd.node); if(n)n.label=cmd.name;
@@ -234,7 +234,12 @@ wsSend = function(cmd){
 };
 
 fetchHistory = async function(id){
-  const s=simState.find(x=>x.id===id); if(!s||!chart)return;
+  const s=simState.find(x=>x.id===id); if(!s)return;
+  sparkData.power=[...s._hist.p];
+  sparkData.voltage=[...s._hist.v];
+  sparkData.current=[...s._hist.i];
+  updateSparklines();
+  if(!chart)return;
   const mc=MC[cMet]; const buf=s._hist[mc.k]||[];
   if(!buf.length)return;
   chart.data.labels=buf.map((_,i)=>{ const sec=(buf.length-1-i)*(SIM_TICK_MS/1000); return sec>60?Math.floor(sec/60)+'m':sec+'s'; });

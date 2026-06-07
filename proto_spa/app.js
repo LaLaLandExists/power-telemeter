@@ -74,13 +74,10 @@ function makeSvgSparkline(vals,color){
   if(!vals||vals.length<2)return'';
   // downsample to 60 pts for path length
   const src=(vals.length>60)?vals.filter((_,i)=>i%Math.ceil(vals.length/60)===0):vals;
-  const dMin=Math.min(...src),dMax=Math.max(...src);
-  // range = larger of natural spread vs 10% of peak
-  // ensures all points fit (no clipping) while small variations don't over-zoom
-  const range=Math.max(dMax-dMin,dMax*0.10)||1;
-  const mid=(dMax+dMin)/2;
-  const dispMin=mid-range/2;
-  const W=200,H=56,PAD_T=8;
+  const dMax=Math.max(...src);
+  const range=dMax||1;
+  const dispMin=0;
+  const W=200,H=38,PAD_T=6;
   const pts=src.map((v,i)=>({
     x:(i/(src.length-1))*W,
     y:PAD_T+(H-PAD_T)*(1-(v-dispMin)/range)
@@ -104,10 +101,11 @@ function makeSvgSparkline(vals,color){
     +`<path d="${line}" fill="none" stroke="${color}" stroke-width="1.8" stroke-linejoin="round" stroke-linecap="round"/>`
     +`</svg>`;
 }
+const SPARK_PREVIEW=40;
 function updateSparklines(){
   const map=[['sparkV','voltage','#ffd166'],['sparkI','current','#06d6a0'],['sparkP','power','#118ab2']];
   map.forEach(([id,key,color])=>{
-    const el=$(id);if(el)el.innerHTML=makeSvgSparkline(sparkData[key],color);
+    const el=$(id);if(el)el.innerHTML=makeSvgSparkline(sparkData[key].slice(-SPARK_PREVIEW),color);
   });
 }
 function expandMetric(key){
@@ -527,7 +525,7 @@ function renderGrid(ns){
     const rw=n.online&&rs===0&&(n.power||0)>RELAY_WARN_W&&(Date.now()-(relayOffAt[n.id]||Date.now()))>SUPERFRAME_MS;
     const faved=isFav(n.id);
     const clf=n.classifier;
-    const clfKey=!clf?'u':!clf.supported?'u':clf.pending?'p':`${clf.classId}c${clf.confidence}t${clf.transient?1:0}`;
+    const clfKey=(!gwHasClassifier||!clf||!clf.supported)?'u':clf.pending?'p':`${clf.classId}c${clf.confidence}t${clf.transient?1:0}`;
     const fp=`${n.label}|${n.online}|${(n.voltage||0).toFixed(1)}|${(n.current||0).toFixed(2)}|${fP(n.power||0)}|${rs}|${al}|${rw}|${faved}|${n.rssi}|${clfKey}`;
     if(c._fp!==fp){
       c._fp=fp;
@@ -538,7 +536,7 @@ function renderGrid(ns){
       let statusHtml;
       if(!n.online){
         statusHtml='<span class="nc-status off M">OFFLINE</span>';
-      }else if(clf&&clf.supported&&!clf.pending&&clf.classId!==undefined){
+      }else if(gwHasClassifier&&clf&&clf.supported&&!clf.pending&&clf.classId!==undefined){
         const cName=CLF_NAMES[clf.classId]||'Unknown';
         const cColor=CLF_COLORS[clf.classId]||'#8892a4';
         statusHtml=`<span class="nc-status M" style="color:${cColor};background:${cColor}1f;border:1px solid ${cColor}4d">${cName}</span>`;
@@ -623,7 +621,7 @@ function updateDetail(d){
 
   sT('dV',(d.voltage||0).toFixed(1));
   const curA=d.current||0;
-  if(curA>0&&curA<1){sT('dI',(curA*1000).toFixed(0));sT('dIu','mA');}
+  if(curA<1){sT('dI',(curA*1000).toFixed(0));sT('dIu','mA');}
   else{sT('dI',curA.toFixed(3));sT('dIu','A');}
   sT('dP',(d.power||0).toFixed(1));
   if((d.energy||0)>=10000){sT('dE',((d.energy||0)/1000).toFixed(2));sT('dEu','kWh');}
@@ -707,7 +705,7 @@ function updateDetail(d){
   const clfPan=$('clfPanel');
   if(clfPan){
     const clf=d.classifier;
-    if(!clf||!clf.supported){
+    if(!gwHasClassifier||!clf||!clf.supported){
       clfPan.style.display='none';
     }else{
       clfPan.style.display='';
@@ -859,7 +857,7 @@ function initChart(){
       },
       scales:{
         x:{grid:{color:getCS('--chart-grid')},ticks:{color:getCS('--chart-tx'),font:{family:"'Fira Code'",size:9},maxTicksLimit:8}},
-        y:{grid:{color:getCS('--chart-grid')},ticks:{color:getCS('--chart-tx'),font:{family:"'Fira Code'",size:9}}}
+        y:{beginAtZero:true,afterDataLimits(s){const d=s.chart.data.datasets[0].data;if(d&&d.length){const pk=Math.max(...d.filter(v=>v!=null));if(pk>0)s.max=pk*1.2;}},grid:{color:getCS('--chart-grid')},ticks:{color:getCS('--chart-tx'),font:{family:"'Fira Code'",size:9}}}
       }
     }
   });
@@ -1329,6 +1327,9 @@ function wifiDoForget(){
 
 /* -- Features ---------------------------------------------------- */
 let gwFeatures={};
+// True unless firmware explicitly reports classifier:false.
+// Stays true when /api/features is absent (old firmware) so per-node clf.supported acts as the gate.
+let gwHasClassifier=true;
 
 async function fetchFeatures(){
   try{
@@ -1340,6 +1341,10 @@ async function fetchFeatures(){
     const ps=$('provSection');if(ps)ps.style.display=enc?'':'none';
     const ts=$('transportTestSection');if(ts)ts.style.display=tt?'':'none';
     if(tt)ttPopulateNodeSel();
+    if(d.classifier===false){
+      gwHasClassifier=false;
+      const cp=$('clfPanel');if(cp)cp.style.display='none';
+    }
   }catch(e){}
 }
 

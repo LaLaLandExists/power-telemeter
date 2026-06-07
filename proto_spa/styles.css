@@ -463,9 +463,9 @@ body::before{
 .metric-card.has-spark .metric-lbl,
 .metric-card.has-spark .metric-val{
   position:relative;z-index:2;
-  text-shadow:0 0 10px var(--sf),0 0 22px var(--sf),0 0 40px var(--sf);
+  text-shadow:0 0 6px var(--sf),0 0 15px var(--sf),0 0 33px var(--sf),0 0 60px var(--sf);
 }
-.metric-spark{position:absolute;bottom:0;left:0;right:0;height:72px;border-radius:0 0 9px 9px;opacity:.45;transition:opacity .2s}
+.metric-spark{position:absolute;bottom:0;left:0;right:0;height:48px;border-radius:0 0 9px 9px;opacity:.45;transition:opacity .2s}
 .metric-card.has-spark:hover .metric-spark{opacity:.7}
 
 .metric-lbl{
