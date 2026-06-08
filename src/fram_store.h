@@ -121,3 +121,18 @@ void framQueueRestore(uint8_t nodeIdx);
  * No-op if framInit() never succeeded.
  */
 void framErase();
+
+#ifdef KNN_INFERENCE
+/**
+ * Load the K-NN database from FRAM into g_knnDb.
+ * Blocking; must be called in single-threaded context (before framTaskStart).
+ * @return true if a valid model was found and loaded.
+ */
+bool framLoadKnn();
+
+/**
+ * Queue a full K-NN database save to the FRAM task.
+ * Non-blocking; safe to call from any task or core.
+ */
+void framQueueSaveKnn();
+#endif // KNN_INFERENCE

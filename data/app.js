@@ -1,5 +1,6 @@
 /* -- State ------------------------------------------------------- */
 let cNid=null,chart=null,cMet='power',socket=null,wsOk=false,fbT=null;
+let cc = null;
 let NC=[],gwTimeSet=false,gwTime='--:--:--',gwNtpSynced=false;
 let pendingCmd={};
 let relayOffAt={};
@@ -136,6 +137,12 @@ const SUPERFRAME_MS=3000;
 const CLF_NAMES=['Resistive','Capacitive','Motor','Fan','SMPS','Lighting','No Load'];
 const CLF_COLORS=['#8892a4','#4fc3f7','#ff9f43','#06d6a0','#ff6b6b','#ffd166','#4a5568'];
 
+// Returns [r,g,b] for a KNN distSq value. Maps 0..0.30 to green..red in four bands.
+function knnStrengthRgb(dSq){
+  const s=Math.max(0,Math.min(1,1-dSq/0.30));
+  return s>0.75?[0,229,160]:s>0.50?[255,209,102]:s>0.25?[255,159,67]:[255,56,96];
+}
+
 function clfBadgeHtml(clf,full){
   if(!clf||!clf.supported)return'';
   if(clf.pending)return`<div class="nc-clf"><span class="clf-pending M">Analyzing...</span></div>`;
@@ -253,7 +260,7 @@ function toggleGwCtrlDrawer(){}
 
 /* -- Prompt wrappers --------------------------------------------- */
 function promptClearEnergy(a){
-  openConfirm('Clear Energy','Reset energy total for Node '+cNid+'? This cannot be undone.',
+  openConfirm('Clear Energy','Reset energy total for '+cc.label+'? This cannot be undone.',
     ()=>wsSend({cmd:'clear_energy',node:cNid}),'Clear',true,a);
 }
 function promptClearAllEnergy(a){
@@ -381,6 +388,7 @@ function onMsg(m){
     sT('idxCount',m.count||0);
     const nc=$('nodeCount');if(nc)nc.textContent=(m.count||0)+' node'+((m.count||0)!==1?'s':'');
     if(gwFeatures['transport-test'])ttPopulateNodeSel();
+    if(gwHasKnn)knnPopulateNodeSel();
   }
   else if(m.type==='telemetry'){
     const n=m.node;
@@ -456,9 +464,12 @@ function goLog(){location.hash='#/log';}
 
 function showOverview(){
   cNid=null;
+  clearInterval(knnCountdownIv);knnCountdownIv=null;
+  const cd=$('knnTrainCountdown');if(cd)cd.style.display='none';
   showPage('pg-overview');
   updateNavActive('overview');
   const bb=$('backBtn');if(bb)bb.style.display='none';
+  const th=$('topbarHead');if(th)th.classList.remove('in-detail');
   renderGrid(NC);
   wsSend({cmd:'get_nodes'});
 }
@@ -467,6 +478,7 @@ function showSettings(){
   showPage('pg-settings');
   updateNavActive('settings');
   const bb=$('backBtn');if(bb)bb.style.display='none';
+  const th=$('topbarHead');if(th)th.classList.remove('in-detail');
   fetchSys();
 }
 
@@ -474,6 +486,7 @@ function showLog(){
   showPage('pg-log');
   updateNavActive('log');
   const bb=$('backBtn');if(bb)bb.style.display='none';
+  const th=$('topbarHead');if(th)th.classList.remove('in-detail');
 }
 
 /* Keep original name for simulation.js compatibility */
@@ -528,8 +541,12 @@ function renderGrid(ns){
     const rw=n.online&&rs===0&&(n.power||0)>RELAY_WARN_W&&(Date.now()-(relayOffAt[n.id]||Date.now()))>SUPERFRAME_MS;
     const faved=isFav(n.id);
     const clf=n.classifier;
+    const knn=n.knn;
     const clfKey=(!gwHasClassifier||!clf||!clf.supported)?'u':clf.pending?'p':`${clf.classId}c${clf.confidence}t${clf.transient?1:0}`;
-    const fp=`${n.label}|${n.online}|${(n.voltage||0).toFixed(1)}|${(n.current||0).toFixed(2)}|${fP(n.power||0)}|${rs}|${al}|${rw}|${faved}|${n.rssi}|${clfKey}`;
+    const knnBand=gwHasKnn&&knn?(knn.distSq||0)<0.075?0:(knn.distSq||0)<0.15?1:(knn.distSq||0)<0.225?2:3:0;
+    const knnKey=gwHasKnn&&knn?`${knn.state}:${knn.label||''}:${knnBand}`:'-';
+    const isTraining=gwHasKnn&&knnTrainingNodes.has(n.id);
+    const fp=`${n.label}|${n.online}|${(n.voltage||0).toFixed(1)}|${(n.current||0).toFixed(2)}|${fP(n.power||0)}|${rs}|${al}|${rw}|${faved}|${n.rssi}|${clfKey}|${knnKey}|tr:${isTraining?1:0}`;
     if(c._fp!==fp){
       c._fp=fp;
       c.classList.toggle('alarm',!!al);
@@ -539,6 +556,13 @@ function renderGrid(ns){
       let statusHtml;
       if(!n.online){
         statusHtml='<span class="nc-status off M">OFFLINE</span>';
+      }else if(isTraining){
+        statusHtml=`<span class="nc-status M" style="color:#f87171;background:#f871711f;border:1px solid #f871714d;display:inline-flex;align-items:center;gap:4px"><svg class="rec-dot" width="8" height="8" viewBox="0 0 24 24" fill="#f87171" stroke="none" aria-hidden="true"><circle cx="12" cy="12" r="9"/></svg>Recording</span>`;
+      }else if(gwHasKnn&&knn&&knn.state==='IDENTIFIED'&&knn.label){
+        const[r,g,b]=knnStrengthRgb(knn.distSq||0);
+        const sc=`rgb(${r},${g},${b})`;
+        const knnIco=`<svg width="9" height="9" viewBox="0 0 24 24" fill="none" stroke="${sc}" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="4" y="4" width="16" height="16" rx="2"/><rect x="9" y="9" width="6" height="6"/><line x1="9" y1="1" x2="9" y2="4"/><line x1="15" y1="1" x2="15" y2="4"/><line x1="9" y1="20" x2="9" y2="23"/><line x1="15" y1="20" x2="15" y2="23"/><line x1="20" y1="9" x2="23" y2="9"/><line x1="20" y1="15" x2="23" y2="15"/><line x1="1" y1="9" x2="4" y2="9"/><line x1="1" y1="15" x2="4" y2="15"/></svg>`;
+        statusHtml=`<span class="nc-status M" style="color:#818cf8;background:#818cf81f;border:1px solid #818cf84d;display:inline-flex;align-items:center;gap:4px">${knnIco}${esc(knn.label)}</span>`;
       }else if(gwHasClassifier&&clf&&clf.supported&&!clf.pending&&clf.classId!==undefined){
         const cName=CLF_NAMES[clf.classId]||'Unknown';
         const cColor=CLF_COLORS[clf.classId]||'#8892a4';
@@ -601,6 +625,7 @@ function showDetail(id){
   showPage('pg-detail');
   updateNavActive('overview');
   const bb=$('backBtn');if(bb)bb.style.display='flex';
+  const th=$('topbarHead');if(th)th.classList.add('in-detail');
   cMet='power';
   clearSparkData();updateSparklines();
   initChart();
@@ -612,6 +637,8 @@ function showDetail(id){
   });
   fetchHistory(id);fetchSys();
   const c=NC.find(n=>n.id===id);if(c)updateDetail(c);
+  cc=c;
+  if(gwHasKnn)updateKnnTrainBadge();
 }
 
 /* -- Update detail view ------------------------------------------ */
@@ -701,18 +728,55 @@ function updateDetail(d){
   const extrapMult=[1,24,24*7,24*30];
   extrapEls.forEach((id,i)=>{
     const el=$(id);if(!el)return;
-    // suppress day/week/month while converging -- small deltas amplify wildly when multiplied by 168-720
-    if(cph===null||( rateState==='converging'&&i>0)){el.textContent='--';el.classList.add('cost-val-pending');}
-    else{el.textContent=(cph*extrapMult[i]).toFixed(2);el.classList.remove('cost-val-pending');}
+    if(cph===null){el.textContent='--';el.classList.add('cost-val-pending');el.classList.remove('cost-val-unstable');}
+    else{
+      el.textContent=(cph*extrapMult[i]).toFixed(2);
+      el.classList.remove('cost-val-pending');
+      el.classList.toggle('cost-val-unstable',rateState==='converging');
+    }
   });
 
-  const clfPan=$('clfPanel');
-  if(clfPan){
+  const infPan=$('inferencePanel');
+  if(infPan){
     const clf=d.classifier;
-    if(!gwHasClassifier||!clf||!clf.supported){
-      clfPan.style.display='none';
-    }else{
-      clfPan.style.display='';
+    const knn=d.knn;
+    const showKnn=gwHasKnn&&!!knn&&!!d.online;
+    const showClf=gwHasClassifier&&!!clf&&!!clf.supported;
+    infPan.style.display=(showKnn||showClf)?'':'none';
+    const knnSec=$('infKnnSection');if(knnSec)knnSec.style.display=showKnn?'':'none';
+    const clfSec=$('infClfSection');if(clfSec)clfSec.style.display=showClf?'':'none';
+    const infDiv=$('infDivider');if(infDiv)infDiv.style.display=(showKnn&&showClf)?'':'none';
+
+    if(showKnn){
+      const state=knn.state||'UNIDENTIFIED';
+      const lbl=$('knnDetLabel'),stEl=$('knnDetState'),hint=$('knnDetHint');
+      if(state==='IDENTIFIED'&&knn.label){
+        const dSq=knn.distSq||0;
+        const[r,g,b]=knnStrengthRgb(dSq);
+        const strength=Math.max(0,Math.min(1,1-dSq/0.30));
+        const pct=Math.round(strength*100);
+        const clr=`rgb(${r},${g},${b})`;
+        if(lbl){lbl.textContent=knn.label;lbl.style.color=clr;}
+        if(stEl){stEl.textContent='IDENTIFIED';stEl.style.cssText=`font-size:9px;background:rgba(${r},${g},${b},.12);color:${clr};border-color:rgba(${r},${g},${b},.30)`;}
+        if(hint){hint.innerHTML=
+          `<div style="display:flex;align-items:center;gap:6px;margin-bottom:2px">`+
+          `<span style="font-size:9px;color:var(--txd);white-space:nowrap;font-family:'Fira Code',monospace">Match</span>`+
+          `<div class="clf-bar-wrap" style="flex:1"><div class="clf-bar-fill" style="width:${pct}%;background:${clr}"></div></div>`+
+          `<span class="clf-bar-pct M" style="color:${clr}">${pct}%</span>`+
+          `</div>`+
+          `<span style="font-size:9px;color:var(--txd);font-family:'Fira Code',monospace">dist2 = ${dSq.toFixed(3)}</span>`;}
+      }else if(state==='SETTLING'){
+        if(lbl){lbl.textContent='...';lbl.style.color='var(--wn)';}
+        if(stEl){stEl.textContent='SETTLING';stEl.style.cssText='font-size:9px;background:rgba(255,159,67,.1);color:var(--wn);border-color:rgba(255,159,67,.3)';}
+        if(hint)hint.textContent='Load settling -- classification will stabilize shortly';
+      }else{
+        if(lbl){lbl.textContent='Unidentified';lbl.style.color='var(--txd)';}
+        if(stEl){stEl.textContent='IDLE';stEl.style.cssText='font-size:9px;background:transparent;color:var(--txd);border-color:var(--bd)';}
+        if(hint)hint.textContent='No active load or appliance not in model';
+      }
+    }
+
+    if(showClf){
       if(clf.pending){
         sT('clfClass','Analyzing...');
         const cc=$('clfClass');if(cc)cc.style.color='var(--txd)';
@@ -1334,6 +1398,11 @@ let gwFeatures={};
 // True unless firmware explicitly reports classifier:false.
 // Stays true when /api/features is absent (old firmware) so per-node clf.supported acts as the gate.
 let gwHasClassifier=true;
+let gwHasKnn=false;
+let knnPollIv=null;
+let knnTrainingNodes=new Set();
+let knnCountdownIv=null;
+let knnCountdownEndMs=0;
 
 async function fetchFeatures(){
   try{
@@ -1347,8 +1416,12 @@ async function fetchFeatures(){
     if(tt)ttPopulateNodeSel();
     if(d.classifier===false){
       gwHasClassifier=false;
-      const cp=$('clfPanel');if(cp)cp.style.display='none';
     }
+    const knn=!!d.knn;
+    gwHasKnn=knn;
+    const ks=$('knnSection');if(ks)ks.style.display=knn?'block':'none';
+    const dtp=$('detailTrainPanel');if(dtp)dtp.style.display=knn?'':'none';
+    if(knn){knnPopulateNodeSel();fetchKnnStatus();}
   }catch(e){}
 }
 
@@ -1419,6 +1492,182 @@ function onBulkComplete(m){
     'Frags: '+m.fragsAcked+'/'+m.fragsSent+' ACKed',
     crcLine,pdr
   ].filter(Boolean).join('<br>');
+}
+
+/* -- KNN Appliance Inference ------------------------------------- */
+function knnPopulateNodeSel(){
+  const sel=$('knnTrainNode');if(!sel)return;
+  while(sel.options.length>1)sel.remove(1);
+  NC.forEach(n=>{
+    if(!n.online)return;
+    const opt=document.createElement('option');
+    opt.value=n.id;opt.textContent='Node '+n.id+' — '+esc(n.label);
+    sel.appendChild(opt);
+  });
+}
+
+async function fetchKnnStatus(){
+  try{
+    const r=await fetch('/api/knn/status');if(!r.ok)return;
+    const d=await r.json();
+    const lb=$('knnLoadedBadge');if(lb)lb.style.display=d.loaded?'':'none';
+    sT('knnProfileCount',d.loaded?d.profileCount:'--');
+    sT('knnLabelCount',  d.loaded?d.labelCount:'--');
+    sT('knnModelSrc',    d.loaded?(d.fromEmbed?'Firmware (embedded)':'FRAM'):'Not loaded');
+    if(d.loaded)knnFetchLabels();
+  }catch(e){}
+}
+
+async function knnFetchLabels(){
+  try{
+    const r=await fetch('/api/knn/labels');if(!r.ok)return;
+    const d=await r.json();
+    const dl=$('knnLabelOpts');if(!dl)return;
+    dl.innerHTML=(d.labels||[]).filter(Boolean).map(l=>`<option value="${esc(l)}">`).join('');
+  }catch(e){}
+}
+
+async function knnTrainStart(){
+  const nodeId=cNid;
+  const label=($('knnTrainLabel')&&$('knnTrainLabel').value.trim())||'';
+  const dur=parseInt(($('knnTrainDur')&&$('knnTrainDur').value)||'5');
+  const st=$('knnTrainStatus');
+  if(!nodeId){if(st){st.style.color='var(--wn)';st.textContent='No node selected';}return;}
+  if(!label){if(st){st.style.color='var(--wn)';st.textContent='Enter a label';}return;}
+  try{
+    const fd=new URLSearchParams({nodeId,label,durationMin:dur});
+    const r=await fetch('/api/knn/train/start',{method:'POST',body:fd,headers:{'Content-Type':'application/x-www-form-urlencoded'}});
+    const d=await r.json();
+    if(d.error){if(st){st.style.color='var(--wn)';st.textContent=d.error;}return;}
+    if(st)st.textContent='';
+    knnStartPoll();
+  }catch(e){if(st){st.style.color='var(--wn)';st.textContent='Request failed';}}
+}
+
+async function knnTrainStop(nodeId){
+  try{
+    const fd=new URLSearchParams({nodeId});
+    await fetch('/api/knn/train/stop',{method:'POST',body:fd,headers:{'Content-Type':'application/x-www-form-urlencoded'}});
+    await knnFetchTrainStatus();fetchKnnStatus();
+  }catch(e){}
+}
+
+async function knnFetchTrainStatus(){
+  try{
+    const r=await fetch('/api/knn/train/status');if(!r.ok)return;
+    const d=await r.json();
+    knnRenderSessions(d.sessions||[]);
+    if(!(d.sessions||[]).some(s=>s.active)){clearInterval(knnPollIv);knnPollIv=null;fetchKnnStatus();}
+  }catch(e){}
+}
+
+function knnStartPoll(){
+  if(knnPollIv)return;
+  knnFetchTrainStatus();
+  knnPollIv=setInterval(knnFetchTrainStatus,3000);
+}
+
+function updateKnnTrainBadge(){
+  const training=gwHasKnn&&knnTrainingNodes.has(cNid);
+  const dot='<svg class="rec-dot" width="7" height="7" viewBox="0 0 24 24" fill="#f87171" stroke="none" aria-hidden="true"><circle cx="12" cy="12" r="10"/></svg>';
+  const tb=$('detTrainBadge');
+  if(tb){tb.style.display=training?'':'none';if(training)tb.innerHTML=dot+' Recording';}
+  const pb=$('trainPanelBadge');
+  if(pb){pb.style.display=training?'':'none';if(training)pb.innerHTML=dot+' Recording';}
+  const startBtn=$('knnTrainBtn');
+  const stopBtn=$('knnStopBtn');
+  if(startBtn)startBtn.style.display=training?'none':'';
+  if(stopBtn)stopBtn.style.display=training?'':'none';
+}
+
+function knnFmtCountdown(sec){
+  const s=Math.max(0,Math.round(sec));
+  return Math.floor(s/60)+':'+(s%60<10?'0':'')+s%60;
+}
+
+function knnTickCountdown(){
+  const rem=(knnCountdownEndMs-Date.now())/1000;
+  const el=$('knnCountdownVal');
+  if(el)el.textContent=knnFmtCountdown(rem);
+  if(rem<=0){
+    clearInterval(knnCountdownIv);knnCountdownIv=null;
+    const cd=$('knnTrainCountdown');if(cd)cd.style.display='none';
+  }
+}
+
+function knnRenderSessions(sessions){
+  knnTrainingNodes=new Set((sessions||[]).filter(s=>s.active).map(s=>s.slotIdx+1));
+  updateKnnTrainBadge();
+  renderGrid(NC);
+  // update countdown for the currently viewed node
+  const activeSess=(sessions||[]).find(s=>s.active&&(s.slotIdx+1)===cNid);
+  const cd=$('knnTrainCountdown');
+  if(activeSess&&cd){
+    knnCountdownEndMs=Date.now()+(activeSess.remainSec||0)*1000;
+    cd.style.display='';
+    if(!knnCountdownIv){knnCountdownIv=setInterval(knnTickCountdown,1000);}
+    knnTickCountdown();
+  }else if(cd&&cd.style.display!=='none'){
+    cd.style.display='none';
+    clearInterval(knnCountdownIv);knnCountdownIv=null;
+  }
+  const sp=$('knnSessionsPanel');
+  const el=$('knnSessionList');
+  if(!el)return;
+  if(!sessions.length){
+    if(sp)sp.style.display='none';
+    el.innerHTML='';
+    return;
+  }
+  if(sp)sp.style.display='';
+  el.innerHTML=sessions.map(s=>{
+    const rs=s.remainSec||0;
+    const remTxt=s.active?(rs>60?Math.floor(rs/60)+'m '+Math.floor(rs%60)+'s':rs+'s'):(s.finalized?'Saved':'--');
+    const stColor=s.finalized?'var(--ac)':s.active?'#f87171':'var(--txd)';
+    const stLabel=s.finalized?'Saved':s.active?'Recording':'Stopped';
+    const nodeLabel=NC.find(n=>n.id===(s.slotIdx+1));
+    const nodeTxt=nodeLabel?(nodeLabel.label||('Node '+(s.slotIdx+1))):'Node '+(s.slotIdx+1);
+    return `<div style="display:flex;align-items:center;gap:8px;padding:6px 0;border-bottom:1px solid var(--bd);font-size:11px">
+      <span class="M" style="min-width:56px;font-size:9px;color:var(--txd);white-space:nowrap">${esc(nodeTxt)}</span>
+      <span class="M" style="flex:1;font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(s.label)}</span>
+      <span class="M" style="font-size:9px;color:var(--txd);white-space:nowrap">${s.samples||0} smp</span>
+      <span class="M" style="font-size:9px;color:${stColor};white-space:nowrap">${stLabel}</span>
+      <span class="M" style="font-size:9px;color:var(--txd);min-width:34px;text-align:right">${remTxt}</span>
+    </div>`;
+  }).join('');
+}
+
+async function knnExport(){
+  try{
+    const r=await fetch('/api/knn/export');if(!r.ok){showToast('Export failed','error');return;}
+    const blob=await r.blob();const url=URL.createObjectURL(blob);
+    const a=document.createElement('a');a.href=url;a.download='knn_model.json';a.click();
+    URL.revokeObjectURL(url);
+  }catch(e){showToast('Export failed','error');}
+}
+
+async function knnImport(input){
+  const file=input.files[0];if(!file)return;
+  const st=$('knnModelStatus');
+  if(st){st.style.color='var(--txd)';st.textContent='Importing...';}
+  try{
+    const text=await file.text();
+    const r=await fetch('/api/knn/import',{method:'POST',body:text,headers:{'Content-Type':'application/json'}});
+    const d=await r.json();
+    if(d.error){if(st){st.style.color='var(--wn)';st.textContent=d.error;}}
+    else{if(st){st.style.color='var(--ac)';st.textContent='Imported ('+d.profileCount+' profiles)';} fetchKnnStatus();}
+  }catch(e){if(st){st.style.color='var(--wn)';st.textContent='Import failed';}}
+  input.value='';
+}
+
+function promptKnnReset(a){
+  openConfirm('Reset Inference Model?','Erase all trained appliance profiles from FRAM. This cannot be undone.',async()=>{
+    try{
+      const r=await fetch('/api/knn/profiles',{method:'DELETE'});
+      const d=await r.json();
+      if(d.ok){fetchKnnStatus();showToast('Model reset','ok');}
+    }catch(e){showToast('Reset failed','error');}
+  },'Reset',true,a);
 }
 
 /* -- Provision --------------------------------------------------- */

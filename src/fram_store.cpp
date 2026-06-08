@@ -58,6 +58,66 @@ static FRAM s_fram(&Wire);
 static bool s_framOk = false;
 
 // ---------------------------------------------------------------------------
+// KNN region layout (starts immediately after the 8 node blocks)
+// ---------------------------------------------------------------------------
+#ifdef KNN_INFERENCE
+#include "knn_db.h"
+
+// 0x3D90  KNN header  (16 bytes)
+//   +0  magic      uint32_t  0xB00BDA7A
+//   +4  version    uint8_t   1
+//   +5  nProfiles  uint8_t
+//   +6  nLabels    uint8_t
+//   +7  normValid  uint8_t
+//   +8  pad[8]
+// 0x3DA0  normMu[6]   float[6]  (24 bytes)
+// 0x3DB8  normSigma[6] float[6] (24 bytes)
+// 0x3DD0  labels[48][24]        (1152 bytes)
+// 0x4250  profiles[48]          (48 x 132 = 6336 bytes)
+
+static constexpr uint16_t KNN_FRAM_BASE    = FRAM_NODES_BASE
+                                             + (uint16_t)MAX_NODES * NODE_BLOCK_SIZE;
+static constexpr uint32_t KNN_MAGIC        = 0xB00BDA7AUL;
+static constexpr uint8_t  KNN_VERSION      = 1;
+static constexpr uint16_t KNN_NORM_ADDR    = KNN_FRAM_BASE + 16;
+static constexpr uint16_t KNN_SIGMA_ADDR   = KNN_NORM_ADDR + KNN_FEATURES * (uint16_t)sizeof(float);
+static constexpr uint16_t KNN_LABELS_ADDR  = KNN_SIGMA_ADDR + KNN_FEATURES * (uint16_t)sizeof(float);
+static constexpr uint16_t KNN_PROF_ADDR    = KNN_LABELS_ADDR
+                                             + (uint16_t)KNN_MAX_LABELS * KNN_LABEL_LEN;
+static constexpr uint16_t KNN_PROF_SIZE    = (uint16_t)sizeof(ApplianceProfile);
+
+static void knnFramSave_fromTask()
+{
+  if (xSemaphoreTake(g_knnMutex, pdMS_TO_TICKS(500)) != pdTRUE) return;
+
+  s_fram.write32(KNN_FRAM_BASE,     KNN_MAGIC);
+  s_fram.write8 (KNN_FRAM_BASE + 4, KNN_VERSION);
+  s_fram.write8 (KNN_FRAM_BASE + 5, g_knnDb.profileCount);
+  s_fram.write8 (KNN_FRAM_BASE + 6, g_knnDb.labelCount);
+  s_fram.write8 (KNN_FRAM_BASE + 7, 1);  // normValid
+
+  s_fram.write(KNN_NORM_ADDR,
+               reinterpret_cast<uint8_t*>(g_knnDb.normMu),
+               KNN_FEATURES * sizeof(float));
+  s_fram.write(KNN_SIGMA_ADDR,
+               reinterpret_cast<uint8_t*>(g_knnDb.normSigma),
+               KNN_FEATURES * sizeof(float));
+  s_fram.write(KNN_LABELS_ADDR,
+               reinterpret_cast<uint8_t*>(g_knnDb.labels),
+               KNN_MAX_LABELS * KNN_LABEL_LEN);
+
+  for (uint8_t p = 0; p < g_knnDb.profileCount; p++) {
+    s_fram.write(KNN_PROF_ADDR + (uint16_t)p * KNN_PROF_SIZE,
+                 reinterpret_cast<uint8_t*>(&g_knnDb.profiles[p]),
+                 KNN_PROF_SIZE);
+  }
+
+  xSemaphoreGive(g_knnMutex);
+  logAsync("[FRAM] KNN model saved (%d profiles)\n", g_knnDb.profileCount);
+}
+#endif // KNN_INFERENCE
+
+// ---------------------------------------------------------------------------
 // Internal helpers
 // ---------------------------------------------------------------------------
 static inline uint16_t nodeBase(uint8_t idx)
@@ -209,6 +269,7 @@ void framSaveLabel(uint8_t nodeIdx)
 #define FRAM_SAVE_ENERGY  0x10u
 #define FRAM_SAVE_HISTORY 0x20u
 #define FRAM_RESTORE      0x40u
+#define FRAM_SAVE_KNN     0x80u  // KNN_INFERENCE only; no node index bits used
 
 static QueueHandle_t s_framQueue = nullptr;
 
@@ -239,11 +300,24 @@ void framQueueRestore(uint8_t nodeIdx)
   xQueueSend(s_framQueue, &msg, 0);
 }
 
+#ifdef KNN_INFERENCE
+void framQueueSaveKnn()
+{
+  if (!s_framQueue) return;
+  uint8_t msg = FRAM_SAVE_KNN;
+  xQueueSend(s_framQueue, &msg, 0);
+}
+#endif // KNN_INFERENCE
+
 static void framTask(void* /*params*/)
 {
   uint8_t msg;
   while (true) {
     if (xQueueReceive(s_framQueue, &msg, portMAX_DELAY) != pdTRUE) continue;
+
+#ifdef KNN_INFERENCE
+    if (msg == FRAM_SAVE_KNN) { knnFramSave_fromTask(); continue; }
+#endif
 
     uint8_t idx = msg & 0x0Fu;
     if (idx >= MAX_NODES) continue;
@@ -376,5 +450,50 @@ void framErase()
   s_fram.write32(FRAM_HEADER_BASE, 0x00000000UL);
   logAsync("[FRAM] Magic erased -- chip will reinitialise as blank on next boot\n");
 }
+
+#ifdef KNN_INFERENCE
+bool framLoadKnn()
+{
+  if (!s_framOk) return false;
+
+  uint32_t magic = s_fram.read32(KNN_FRAM_BASE);
+  if (magic != KNN_MAGIC) return false;
+
+  uint8_t ver       = s_fram.read8(KNN_FRAM_BASE + 4);
+  uint8_t nProfiles = s_fram.read8(KNN_FRAM_BASE + 5);
+  uint8_t nLabels   = s_fram.read8(KNN_FRAM_BASE + 6);
+
+  if (ver != KNN_VERSION || nProfiles > KNN_MAX_PROFILES || nLabels > KNN_MAX_LABELS) {
+    logAsync("[FRAM] KNN version/range mismatch -- skipping restore\n");
+    return false;
+  }
+
+  memset(&g_knnDb, 0, sizeof(g_knnDb));
+
+  s_fram.read(KNN_NORM_ADDR,
+              reinterpret_cast<uint8_t*>(g_knnDb.normMu),
+              KNN_FEATURES * sizeof(float));
+  s_fram.read(KNN_SIGMA_ADDR,
+              reinterpret_cast<uint8_t*>(g_knnDb.normSigma),
+              KNN_FEATURES * sizeof(float));
+  s_fram.read(KNN_LABELS_ADDR,
+              reinterpret_cast<uint8_t*>(g_knnDb.labels),
+              KNN_MAX_LABELS * KNN_LABEL_LEN);
+
+  for (uint8_t p = 0; p < nProfiles; p++) {
+    s_fram.read(KNN_PROF_ADDR + (uint16_t)p * KNN_PROF_SIZE,
+                reinterpret_cast<uint8_t*>(&g_knnDb.profiles[p]),
+                KNN_PROF_SIZE);
+  }
+
+  g_knnDb.labelCount   = nLabels;
+  g_knnDb.profileCount = nProfiles;
+  g_knnDb.loaded       = true;
+  g_knnDb.fromEmbed    = false;
+
+  logAsync("[FRAM] KNN model loaded: %d profiles, %d labels\n", nProfiles, nLabels);
+  return true;
+}
+#endif // KNN_INFERENCE
 
 #endif // NODE_GATEWAY

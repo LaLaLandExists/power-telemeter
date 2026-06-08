@@ -126,6 +126,19 @@ struct NodeState {
   // CLASS_BYTE_PENDING     (0x40) = AFE node, smoothing window filling.
   // All other values: packed classId[2:0] + confidence[5:3] + transient[6].
   uint8_t  classByte = CLASS_BYTE_UNSUPPORTED;
+
+#ifdef KNN_INFERENCE
+  // K-NN appliance inference state (gateway-only; not transmitted over radio)
+  uint8_t  knnMachineState;   // KNN_ST_UNIDENTIFIED / SETTLING / IDENTIFIED
+  uint8_t  knnLabelIdx;       // 0xFF = unidentified
+  uint8_t  knnStateIdx;       // matched operating-state index within profile
+  uint8_t  knnZeroCnt;        // consecutive near-zero W samples (swap detection)
+  uint8_t  knnSettleCnt;      // stable samples since last significant ΔW
+  uint8_t  knnVotePos;        // circular write index into knnVoteBuf
+  uint8_t  knnVoteBuf[5];     // last 5 label-index results for majority vote
+  float    knnDistSq;         // nearest normalized distance^2 from last search
+  float    knnPrevW;          // W from the previous telemetry sample
+#endif
 };
 
 // -----------------------------------------------------------------------------

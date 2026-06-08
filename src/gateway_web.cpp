@@ -31,6 +31,10 @@
   #include "crypto.h"
   #include "rfid_provision.h"
 #endif
+#ifdef KNN_INFERENCE
+  #include "knn_db.h"
+  #include "knn_training.h"
+#endif
 #include <ESPAsyncWebServer.h>
 #include <AsyncTCP.h>
 #include <LittleFS.h>
@@ -148,6 +152,13 @@ static void nodeToSummaryJson(JsonObject obj, const NodeState &ns)
 
   bool hasSched = (ns.relayMode == 1 && ns.schedState > 0);
   obj["hasSched"] = hasSched;
+
+#ifdef KNN_INFERENCE
+  JsonObject knn_obj = obj["knn"].to<JsonObject>();
+  knn_obj["label"]   = knnGetLabel(ns.knnLabelIdx);
+  knn_obj["state"]   = knnMachineStateName(ns.knnMachineState);
+  knn_obj["distSq"]  = ns.knnDistSq;
+#endif
 
   // Load classifier
   JsonObject clf = obj["classifier"].to<JsonObject>();
@@ -1187,8 +1198,161 @@ void webServerSetup()
 #else
       "false"
 #endif
+      ",\"knn\":"
+#ifdef KNN_INFERENCE
+      "true"
+#else
+      "false"
+#endif
+      ",\"knn_embed\":"
+#ifdef KNN_MODEL_EMBED
+      "true"
+#else
+      "false"
+#endif
       "}");
   });
+
+  // -- K-NN appliance inference (KNN_INFERENCE builds only) ------------------
+#ifdef KNN_INFERENCE
+
+  server.on("/api/knn/status", HTTP_GET, [](AsyncWebServerRequest* req) {
+    if (!webCheckAuth(req)) { req->send(401, "application/json", "{\"error\":\"unauthorized\"}"); return; }
+    JsonDocument doc;
+    doc["loaded"]       = g_knnDb.loaded;
+    doc["profileCount"] = g_knnDb.profileCount;
+    doc["labelCount"]   = g_knnDb.labelCount;
+    doc["fromEmbed"]    = g_knnDb.fromEmbed;
+    String json;
+    serializeJson(doc, json);
+    req->send(200, "application/json", json);
+  });
+
+  server.on("/api/knn/export", HTTP_GET, [](AsyncWebServerRequest* req) {
+    if (!webCheckAuth(req)) { req->send(401, "application/json", "{\"error\":\"unauthorized\"}"); return; }
+    AsyncResponseStream* resp = req->beginResponseStream("application/json");
+    knnSerialize(*resp);
+    req->send(resp);
+  });
+
+  // Static import buffer -- 8 KB handles models up to ~50 profiles
+  static uint8_t s_knnImportBuf[8192];
+  static size_t  s_knnImportLen  = 0;
+  static bool    s_knnImportOk   = false;
+
+  server.on("/api/knn/import", HTTP_POST,
+    [](AsyncWebServerRequest* req) {
+      if (!webCheckAuth(req)) { req->send(401, "application/json", "{\"error\":\"unauthorized\"}"); return; }
+      if (!s_knnImportOk) {
+        req->send(400, "application/json", "{\"error\":\"parse failed\"}");
+      } else {
+        JsonDocument ack;
+        ack["ok"]           = true;
+        ack["profileCount"] = g_knnDb.profileCount;
+        ack["labelCount"]   = g_knnDb.labelCount;
+        String json;
+        serializeJson(ack, json);
+        req->send(200, "application/json", json);
+      }
+    },
+    nullptr,
+    [](AsyncWebServerRequest* req, uint8_t* data, size_t len,
+       size_t index, size_t total) {
+      if (index == 0) {
+        s_knnImportLen = 0;
+        s_knnImportOk  = (total <= sizeof(s_knnImportBuf));
+      }
+      if (s_knnImportOk && s_knnImportLen + len <= sizeof(s_knnImportBuf)) {
+        memcpy(s_knnImportBuf + s_knnImportLen, data, len);
+        s_knnImportLen += len;
+      } else {
+        s_knnImportOk = false;
+      }
+      if (index + len == total && s_knnImportOk) {
+        s_knnImportOk = knnDeserialize(s_knnImportBuf, s_knnImportLen, false);
+        if (s_knnImportOk) framQueueSaveKnn();
+      }
+    }
+  );
+
+  server.on("/api/knn/profiles", HTTP_DELETE, [](AsyncWebServerRequest* req) {
+    if (!webCheckAuth(req)) { req->send(401, "application/json", "{\"error\":\"unauthorized\"}"); return; }
+    knnDbClear();
+    framQueueSaveKnn();
+    req->send(200, "application/json", "{\"ok\":true}");
+  });
+
+  server.on("/api/knn/train/start", HTTP_POST, [](AsyncWebServerRequest* req) {
+    if (!webCheckAuth(req)) { req->send(401, "application/json", "{\"error\":\"unauthorized\"}"); return; }
+    if (!req->hasParam("nodeId", true) || !req->hasParam("label", true)) {
+      req->send(400, "application/json", "{\"error\":\"missing params\"}");
+      return;
+    }
+    uint8_t nodeId = (uint8_t)req->getParam("nodeId", true)->value().toInt();
+    const char* label = req->getParam("label", true)->value().c_str();
+    uint32_t durMin = req->hasParam("durationMin", true)
+                      ? (uint32_t)req->getParam("durationMin", true)->value().toInt()
+                      : 30u;
+    if (nodeId < 1 || nodeId > MAX_NODES || label[0] == '\0') {
+      req->send(400, "application/json", "{\"error\":\"invalid params\"}");
+      return;
+    }
+    uint8_t idx = tdmaFindSlotByNodeId(nodeId);
+    if (idx == 0xFF) {
+      req->send(404, "application/json", "{\"error\":\"node not found\"}");
+      return;
+    }
+    knnTrainStart(idx, label, durMin * 60000UL);
+    req->send(200, "application/json", "{\"ok\":true}");
+  });
+
+  server.on("/api/knn/train/stop", HTTP_POST, [](AsyncWebServerRequest* req) {
+    if (!webCheckAuth(req)) { req->send(401, "application/json", "{\"error\":\"unauthorized\"}"); return; }
+    if (!req->hasParam("nodeId", true)) {
+      req->send(400, "application/json", "{\"error\":\"missing nodeId\"}");
+      return;
+    }
+    uint8_t nodeId = (uint8_t)req->getParam("nodeId", true)->value().toInt();
+    uint8_t idx    = tdmaFindSlotByNodeId(nodeId);
+    if (idx == 0xFF) {
+      req->send(404, "application/json", "{\"error\":\"node not found\"}");
+      return;
+    }
+    knnTrainStop(idx);
+    JsonDocument ack;
+    ack["ok"]           = true;
+    ack["profileCount"] = g_knnDb.profileCount;
+    String json;
+    serializeJson(ack, json);
+    req->send(200, "application/json", json);
+  });
+
+  server.on("/api/knn/train/status", HTTP_GET, [](AsyncWebServerRequest* req) {
+    if (!webCheckAuth(req)) { req->send(401, "application/json", "{\"error\":\"unauthorized\"}"); return; }
+    JsonDocument doc;
+    JsonArray    arr = doc["sessions"].to<JsonArray>();
+    for (uint8_t i = 0; i < MAX_NODES; i++) {
+      const KnnTrainSession& s = g_knnTrain[i];
+      if (!s.active && !s.finalized) continue;
+      JsonObject obj   = arr.add<JsonObject>();
+      obj["slotIdx"]   = i;
+      obj["label"]     = s.label;
+      obj["active"]    = s.active;
+      obj["finalized"] = s.finalized;
+      uint32_t now     = millis();
+      obj["remainSec"] = s.active && (s.deadlineMs > now)
+                         ? (s.deadlineMs - now) / 1000UL : 0u;
+      uint32_t total   = 0;
+      for (uint8_t st = 0; st < s.nStates; st++) total += s.states[st].cnt;
+      obj["samples"] = total;
+      obj["nStates"] = s.nStates;
+    }
+    String json;
+    serializeJson(doc, json);
+    req->send(200, "application/json", json);
+  });
+
+#endif // KNN_INFERENCE
 
   // -- Reboot ----------------------------------------------------------------
   server.on("/api/reboot", HTTP_POST, [](AsyncWebServerRequest* req) {

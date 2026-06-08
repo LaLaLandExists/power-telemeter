@@ -85,7 +85,7 @@
 </nav>
 
 <!-- Topbar -->
-<header class="topbar">
+<header class="topbar" id="topbarHead">
   <div class="topbar-l">
     <button class="back-btn" id="backBtn" onclick="goHome()" style="display:none" aria-label="Back to nodes overview">
       <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="15 18 9 12 15 6"/></svg>
@@ -162,6 +162,7 @@
         <p>Power on sensor nodes. They will appear here once connected.</p>
       </div>
 
+
     </div>
   </div><!-- /pg-overview -->
 
@@ -182,6 +183,7 @@
             <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" aria-hidden="true"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg>
             Nudge
           </button>
+          <span id="detTrainBadge" class="hdr-badge M" style="display:none;font-size:9px;color:#f87171;background:#f871711f;border-color:#f871714d" role="status">Recording</span>
           <span class="panel-badge M nc-status" id="detStatus" role="status">--</span>
         </div>
       </div>
@@ -245,19 +247,71 @@
         <!-- Right sidebar -->
         <div class="side-col">
 
-          <!-- Load classifier -->
-          <div class="panel" id="clfPanel" style="display:none" role="region" aria-label="Load inference">
+          <!-- Merged appliance / load inference -->
+          <div class="panel" id="inferencePanel" style="display:none" role="region" aria-label="Load inference">
             <div class="panel-head"><span class="panel-title">Load Inference</span></div>
             <div class="panel-body">
-              <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-bottom:6px">
-                <span id="clfClass" class="M" style="font-size:20px;font-weight:700" aria-live="polite">--</span>
-                <span id="clfConf" style="display:flex;gap:6px;align-items:center;flex:1;min-width:0"></span>
+              <!-- KNN appliance sub-section -->
+              <div id="infKnnSection" style="display:none">
+                <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-bottom:4px">
+                  <span id="knnDetLabel" class="M" style="font-size:18px;font-weight:700" aria-live="polite">--</span>
+                  <span id="knnDetState" class="hdr-badge M" style="font-size:9px"></span>
+                </div>
+                <div id="knnDetHint" style="font-size:10px;color:var(--txd);font-family:'Fira Code',monospace;line-height:1.6"></div>
               </div>
-              <div id="clfTrans" style="display:none;font-size:10px;color:var(--wn)" class="M" role="alert">
-                <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" aria-hidden="true"><path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>
-                Transient &mdash; classification may be unstable
+              <div id="infDivider" class="divider" style="display:none"></div>
+              <!-- Load classifier sub-section -->
+              <div id="infClfSection" style="display:none">
+                <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-bottom:6px">
+                  <span id="clfClass" class="M" style="font-size:20px;font-weight:700" aria-live="polite">--</span>
+                  <span id="clfConf" style="display:flex;gap:6px;align-items:center;flex:1;min-width:0"></span>
+                </div>
+                <div id="clfTrans" style="display:none;font-size:10px;color:var(--wn)" class="M" role="alert">
+                  <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" aria-hidden="true"><path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>
+                  Transient &mdash; classification may be unstable
+                </div>
+                <div id="clfHint" style="font-size:10px;color:var(--txd);font-family:'Fira Code',monospace;margin-top:8px;line-height:1.6"></div>
               </div>
-              <div id="clfHint" style="font-size:10px;color:var(--txd);font-family:'Fira Code',monospace;margin-top:8px;line-height:1.6"></div>
+            </div>
+          </div>
+
+          <!-- Appliance trainer (KNN_INFERENCE builds only) -->
+          <div class="panel" id="detailTrainPanel" style="display:none" role="region" aria-label="Train appliance">
+            <div class="panel-head">
+              <span class="panel-title">Train Appliance</span>
+              <span id="trainPanelBadge" class="hdr-badge M" style="display:none;font-size:9px;color:#f87171;background:#f871711f;border-color:#f871714d">Recording</span>
+            </div>
+            <div class="panel-body">
+              <div class="form-group" style="margin-bottom:8px">
+                <label class="form-label" for="knnTrainLabel">Appliance Label</label>
+                <input class="form-input M" type="text" id="knnTrainLabel" placeholder="e.g. Refrigerator" maxlength="23" spellcheck="false" autocomplete="off" list="knnLabelOpts">
+                <datalist id="knnLabelOpts"></datalist>
+              </div>
+              <div class="form-group" style="margin-bottom:10px">
+                <label class="form-label" for="knnTrainDur">Duration</label>
+                <select class="form-input M" id="knnTrainDur" style="font-size:11px">
+                  <option value="2">2 minutes</option>
+                  <option value="5" selected>5 minutes</option>
+                  <option value="10">10 minutes</option>
+                  <option value="15">15 minutes</option>
+                  <option value="30">30 minutes</option>
+                </select>
+              </div>
+              <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">
+                <button class="btn btn-primary M" id="knnTrainBtn" onclick="knnTrainStart()" style="font-size:11px;margin-top:0;width:auto;padding:8px 16px">
+                  <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" aria-hidden="true"><circle cx="12" cy="12" r="10"/><polygon points="10 8 16 12 10 16 10 8"/></svg>
+                  Start Training
+                </button>
+                <button class="btn btn-danger M" id="knnStopBtn" onclick="knnTrainStop(cNid)" style="font-size:11px;margin-top:0;width:auto;padding:8px 16px;display:none">
+                  <svg width="13" height="13" viewBox="0 0 24 24" fill="currentColor" stroke="none" aria-hidden="true"><rect x="5" y="5" width="14" height="14" rx="1.5"/></svg>
+                  Stop Training
+                </button>
+                <span class="M" id="knnTrainStatus" style="font-size:10px;color:var(--txd)" aria-live="polite"></span>
+              </div>
+              <div id="knnTrainCountdown" style="display:none;margin-top:10px;padding:8px 10px;background:rgba(248,113,113,.06);border:1px solid rgba(248,113,113,.2);border-radius:6px">
+                <div style="font-size:9px;color:var(--txd);margin-bottom:2px;text-transform:uppercase;letter-spacing:.04em">Time remaining</div>
+                <div id="knnCountdownVal" class="M" style="font-size:22px;font-weight:700;color:#f87171;font-variant-numeric:tabular-nums;letter-spacing:-.01em">0:00</div>
+              </div>
             </div>
           </div>
 
@@ -708,6 +762,55 @@
             </div>
           </div>
 
+          <!-- KNN Inference (hidden unless KNN_INFERENCE build) -->
+          <div id="knnSection" style="display:none;grid-column:1/-1">
+            <div class="settings-grid" style="margin:0;padding:0">
+
+              <!-- Model status + management -->
+              <div class="panel" role="region" aria-label="KNN model status">
+                <div class="panel-head">
+                  <span class="panel-title">Inference Model</span>
+                  <span class="hdr-badge M ws-ok" id="knnLoadedBadge" style="display:none">Loaded</span>
+                </div>
+                <div class="panel-body">
+                  <div class="info-grid" style="border:none;margin:0;padding:0">
+                    <div class="info-row"><span class="info-lbl">Profiles</span><span class="info-val M" id="knnProfileCount">--</span></div>
+                    <div class="info-row"><span class="info-lbl">Labels</span><span class="info-val M" id="knnLabelCount">--</span></div>
+                    <div class="info-row"><span class="info-lbl">Source</span><span class="info-val M" id="knnModelSrc">--</span></div>
+                  </div>
+                  <div class="divider"></div>
+                  <div style="display:flex;gap:6px;flex-wrap:wrap">
+                    <button class="btn btn-ghost M" onclick="knnExport()" style="font-size:11px;margin-top:0;flex:1">
+                      <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" aria-hidden="true"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+                      Export
+                    </button>
+                    <label class="btn btn-ghost M" style="font-size:11px;margin-top:0;flex:1;cursor:pointer;display:inline-flex;align-items:center;justify-content:center;gap:5px" title="Import model JSON">
+                      <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" aria-hidden="true"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>
+                      Import
+                      <input type="file" id="knnImportFile" accept=".json" style="display:none" onchange="knnImport(this)">
+                    </label>
+                  </div>
+                  <button class="btn btn-danger M" onclick="promptKnnReset(this)" style="font-size:11px;margin-top:8px">
+                    <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" aria-hidden="true"><polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14H6L5 6"/><path d="M10 11v6"/><path d="M14 11v6"/><path d="M9 6V4h6v2"/></svg>
+                    Factory Reset Model
+                  </button>
+                  <div class="M" id="knnModelStatus" style="font-size:10px;color:var(--txd);margin-top:6px;min-height:14px" aria-live="polite"></div>
+                </div>
+              </div>
+
+              <!-- Active training sessions -->
+              <div class="panel" id="knnSessionsPanel" style="display:none" role="region" aria-label="Active training sessions">
+                <div class="panel-head">
+                  <span class="panel-title">Training Sessions</span>
+                </div>
+                <div class="panel-body">
+                  <div id="knnSessionList"></div>
+                </div>
+              </div>
+
+            </div>
+          </div>
+
           <!-- Reboot -->
           <div class="panel cc-dg" role="region" aria-label="Gateway reboot">
             <div class="panel-head"><span class="panel-title">System</span></div>
@@ -745,9 +848,10 @@
     </div>
   </div><!-- /pg-log -->
 
-  <footer style="text-align:center;padding:14px;font-size:10px;color:var(--txd);border-top:1px solid var(--bd);font-family:'Fira Code',monospace">
-    PowerTelemetry Gateway &middot; Dashboard &middot; <span style="color:var(--ac)" id="fwVerFt">--</span>
-    <br>A project presented in partial fulfillment to the requirements of Microprocessors, Microcontrollers, and DE.
+  <footer style="display:flex;align-items:center;justify-content:center;gap:6px;padding:12px 16px;font-size:10px;color:var(--txd);border-top:1px solid var(--bd);font-family:'Fira Code',monospace;white-space:nowrap;overflow:hidden">
+    <span>PowerTelemetry Gateway &middot; Dashboard &middot; <span style="color:var(--ac)" id="fwVerFt">--</span></span>
+    <span style="color:var(--bd)">|</span>
+    <span style="overflow:hidden;text-overflow:ellipsis">Microprocessors, Microcontrollers &amp; DE</span>
   </footer>
 
 </main>

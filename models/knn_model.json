@@ -1,0 +1,10 @@
+{
+  "version": 1,
+  "gridVoltage": 220,
+  "gridFrequency": 60,
+  "normalization": {
+    "mu":    [0.0, 0.0, 0.0, 0.0, 220.0, 0.75],
+    "sigma": [1.0, 1.0, 1.0, 1.0,   3.0, 0.10]
+  },
+  "appliances": []
+}

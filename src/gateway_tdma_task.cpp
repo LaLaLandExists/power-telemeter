@@ -27,6 +27,10 @@
 #include "hal/hal_sys.h"
 #include "hal/hal_rtos.h"
 #include <RadioLib.h>
+#ifdef KNN_INFERENCE
+  #include "knn_engine.h"
+  #include "knn_training.h"
+#endif
 
 // Dirty counters for deferred FRAM writes (n=10 policy)
 #define FRAM_WRITE_N 10
@@ -403,6 +407,13 @@ static void processUplink(uint8_t slotIdx, const TelemetryPacket& pkt, int16_t r
   // Push to WebSocket clients on Core 0 (non-blocking, safe from Core 1)
   webBroadcastTelemetry(slotIdx);
 
+#ifdef KNN_INFERENCE
+  if (g_knnTrain[slotIdx].active)
+    knnTrainAccumulate(slotIdx, pkt);
+  else
+    knnInferStep(slotIdx, pkt);
+#endif
+
   logAsync("[GW-UL] Slot%d V=%.1f A=%.3f W=%.1f Wh=%lu RSSI=%d\n",
            pkt.nodeId,
            pkt.voltage / 10.0f,
@@ -513,6 +524,15 @@ static void evictStaleNodes() {
     ns->missedSfs = 0;
     ns->label[0]  = '\0';  // clear so next joiner doesn't inherit a stale label
     g_slotMask   &= ~(1u << i);
+#ifdef KNN_INFERENCE
+    ns->knnMachineState = KNN_ST_UNIDENTIFIED;
+    ns->knnLabelIdx     = 0xFF;
+    ns->knnSettleCnt    = 0;
+    ns->knnZeroCnt      = 0;
+    ns->knnPrevW        = 0.0f;
+    ns->knnVotePos      = 0;
+    memset(ns->knnVoteBuf, 0xFF, sizeof(ns->knnVoteBuf));
+#endif
     anyEvicted = true;
   }
   if (anyEvicted) g_networkEpoch++;  // one increment signals all re-contention needed

@@ -89,6 +89,14 @@
   #include "gateway_web.h"
   #include "gateway_wifi_config.h"
   #include "fram_store.h"
+  #ifdef KNN_INFERENCE
+    #include "knn_db.h"
+    #include "knn_training.h"
+    #include "knn_engine.h"
+    #ifdef KNN_MODEL_EMBED
+      #include "knn_model_embed.h"
+    #endif
+  #endif
 #endif
 #ifdef NODE_TELEMETRY
   #if !defined(PZEM_FAKE) && !defined(METER_AFE)
@@ -295,7 +303,29 @@ void setup() {
   } else {
     logAsync("[FRAM] OK\n");
     framLoadAll();
+#ifdef KNN_INFERENCE
+    knnDbInit();
+    knnTrainInit();
+    bool knn_needs_seed = false;
+    if (!framLoadKnn()) {
+      logAsync("[KNN] No FRAM model found\n");
+#ifdef KNN_MODEL_EMBED
+      if (knnDeserialize(KNN_MODEL_EMBED, KNN_MODEL_EMBED_LEN, true)) {
+        knn_needs_seed = true;
+        logAsync("[KNN] Factory model seeded from firmware (%lu B)\n",
+                 (unsigned long)KNN_MODEL_EMBED_LEN);
+      } else {
+        logAsync("[KNN] Factory model parse failed\n");
+      }
+#else
+      logAsync("[KNN] No model -- use POST /api/knn/import or training mode\n");
+#endif
+    }
+#endif
     framTaskStart();
+#ifdef KNN_INFERENCE
+    if (knn_needs_seed) framQueueSaveKnn();
+#endif
   }
 
   // -- Packet encryption (encrypted builds only) ----------------------------
