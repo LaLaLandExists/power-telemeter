@@ -384,7 +384,7 @@ function onMsg(m){
       recordEnergyAnchor(n.id,n.energy||0);
     });
     const pg=$('pg-overview');
-    if(!cNid&&pg&&pg.classList.contains('active'))renderGrid(NC);
+    if(pg&&pg.classList.contains('active'))renderGrid(NC);
     sT('idxCount',m.count||0);
     const nc=$('nodeCount');if(nc)nc.textContent=(m.count||0)+' node'+((m.count||0)!==1?'s':'');
     if(gwFeatures['transport-test'])ttPopulateNodeSel();
@@ -400,7 +400,7 @@ function onMsg(m){
     recordEnergyAnchor(n.id,n.energy||0);
     const i=NC.findIndex(x=>x.id===n.id);if(i>=0)Object.assign(NC[i],o);else NC.push(o);
     const pg=$('pg-overview');
-    if(!cNid&&pg&&pg.classList.contains('active'))renderGrid(NC);
+    if(pg&&pg.classList.contains('active'))renderGrid(NC);
     if(cNid===n.id){updateDetail(o);addChartPoint(n);}
   }
   else if(m.type==='name_changed'){
@@ -408,14 +408,14 @@ function onMsg(m){
     if(i>=0)NC[i].label=m.name;
     if(cNid===m.node&&!document.querySelector('.rename-input'))sT('detLabel',m.name);
     const pg=$('pg-overview');
-    if(!cNid&&pg&&pg.classList.contains('active'))renderGrid(NC);
+    if(pg&&pg.classList.contains('active'))renderGrid(NC);
   }
   else if(m.type==='time_set'){gwTimeSet=true;if(m.time)gwTime=m.time;if(m.source)gwNtpSynced=(m.source==='ntp');updGwTime();}
   else if(m.type==='threshold_ack'){if(!m.success){if(m.node!==undefined)delete pendingCmd[m.node];showToast('Threshold command failed','error');}}
   else if(m.type==='nudge_ack'){if(!m.success){if(m.node!==undefined)delete pendingCmd[m.node];showToast('Nudge failed','error');}}
   else if(m.type==='relay_ack'||m.type==='schedule_ack'||m.type==='clear_ack'){if(!m.success){if(m.node!==undefined)delete pendingCmd[m.node];showToast('Command failed','error');}}
   else if(m.type==='energy_cleared'){const i=NC.findIndex(x=>x.id===m.node);if(i>=0)NC[i].energy=0;clearEnergyAnchor(m.node);if(cNid===m.node)updateDetail(NC.find(x=>x.id===cNid)||{});}
-  else if(m.type==='all_energy_cleared'){NC.forEach(n=>n.energy=0);Object.keys(energyAnchor).forEach(clearEnergyAnchor);if(cNid){const c=NC.find(x=>x.id===cNid);if(c)updateDetail(c);}const pg=$('pg-overview');if(!cNid&&pg&&pg.classList.contains('active'))renderGrid(NC);}
+  else if(m.type==='all_energy_cleared'){NC.forEach(n=>n.energy=0);Object.keys(energyAnchor).forEach(clearEnergyAnchor);if(cNid){const c=NC.find(x=>x.id===cNid);if(c)updateDetail(c);}const pg=$('pg-overview');if(pg&&pg.classList.contains('active'))renderGrid(NC);}
   else if(m.type==='transport_test_ack'){onTransportTestAck(m);}
   else if(m.type==='bulk_complete'||m.type==='bulk_failed'){onBulkComplete(m);}
   else if(m.type==='log')appendLog(m.line);
@@ -426,8 +426,10 @@ function startFallback(){
   if(fbT)return;
   fbT=setInterval(async()=>{
     try{
-      if(cNid){const r=await fetch('/api/node/'+cNid+'/live');const d=await r.json();if(!d.error)updateDetail(d);}
-      else{const r=await fetch('/api/nodes');const d=await r.json();NC=d.nodes||[];renderGrid(NC);}
+      const r=await fetch('/api/nodes');const d=await r.json();NC=d.nodes||[];
+      const pg=$('pg-overview');
+      if(pg&&pg.classList.contains('active'))renderGrid(NC);
+      if(cNid){const n=NC.find(x=>x.id===cNid);if(n){updateDetail(n);}}
     }catch(e){}
   },3000);
 }
@@ -466,6 +468,7 @@ function showOverview(){
   cNid=null;
   clearInterval(knnCountdownIv);knnCountdownIv=null;
   const cd=$('knnTrainCountdown');if(cd)cd.style.display='none';
+  window.scrollTo(0,0);
   showPage('pg-overview');
   updateNavActive('overview');
   const bb=$('backBtn');if(bb)bb.style.display='none';
@@ -561,7 +564,7 @@ function renderGrid(ns){
       }else if(gwHasKnn&&knn&&knn.state==='IDENTIFIED'&&knn.label){
         const[r,g,b]=knnStrengthRgb(knn.distSq||0);
         const sc=`rgb(${r},${g},${b})`;
-        const knnIco=`<svg width="9" height="9" viewBox="0 0 24 24" fill="none" stroke="${sc}" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="4" y="4" width="16" height="16" rx="2"/><rect x="9" y="9" width="6" height="6"/><line x1="9" y1="1" x2="9" y2="4"/><line x1="15" y1="1" x2="15" y2="4"/><line x1="9" y1="20" x2="9" y2="23"/><line x1="15" y1="20" x2="15" y2="23"/><line x1="20" y1="9" x2="23" y2="9"/><line x1="20" y1="15" x2="23" y2="15"/><line x1="1" y1="9" x2="4" y2="9"/><line x1="1" y1="15" x2="4" y2="15"/></svg>`;
+        const knnIco=`<svg width="13" height="13" viewBox="-2 -2 28 28" fill="${sc}" stroke="none" aria-hidden="true"><path d="M9 4C11 11 11 11 18 13C11 15 11 15 9 22C7 15 7 15 0 13C7 11 7 11 9 4Z"/><path d="M20 1C20.8 3.8 20.8 3.8 24 5C20.8 6.2 20.8 6.2 20 10C19.2 6.2 19.2 6.2 15 5C19.2 3.8 19.2 3.8 20 1Z"/></svg>`;
         statusHtml=`<span class="nc-status M" style="color:#818cf8;background:#818cf81f;border:1px solid #818cf84d;display:inline-flex;align-items:center;gap:4px">${knnIco}${esc(knn.label)}</span>`;
       }else if(gwHasClassifier&&clf&&clf.supported&&!clf.pending&&clf.classId!==undefined){
         const cName=CLF_NAMES[clf.classId]||'Unknown';
@@ -606,7 +609,7 @@ function renderGrid(ns){
           <button class="nudge-btn M" data-nid="${n.id}" onclick="doNudge(${n.id},event)" aria-label="Nudge node ${n.id}" ${n.online?'':'disabled style="opacity:.3;pointer-events:none"'}>
             ${NUDGE_ICO} Nudge
           </button>
-          <div class="nc-relay-group">
+          <div class="nc-relay-group" onclick="openRelayDialog(${n.id},event)" role="button" aria-label="Open relay control for ${esc(n.label)||'Node '+n.id}" style="cursor:pointer">
             <span class="nc-relay ${rs?'on':'off'}${rw?' warn':''}">Relay: ${rs?'ON':'OFF'}${rw?' ⚠':''}</span>
             <span class="nc-arrow" aria-hidden="true">
               <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="9 18 15 12 9 6"/></svg>
@@ -745,7 +748,7 @@ function updateDetail(d){
     infPan.style.display=(showKnn||showClf)?'':'none';
     const knnSec=$('infKnnSection');if(knnSec)knnSec.style.display=showKnn?'':'none';
     const clfSec=$('infClfSection');if(clfSec)clfSec.style.display=showClf?'':'none';
-    const infDiv=$('infDivider');if(infDiv)infDiv.style.display=(showKnn&&showClf)?'':'none';
+    const infDiv=$('infDivider');if(infDiv)infDiv.style.display=showClf?'':'none';
 
     if(showKnn){
       const state=knn.state||'UNIDENTIFIED';
@@ -807,10 +810,56 @@ function updateDetail(d){
 }
 
 /* -- Relay controls ---------------------------------------------- */
+let _relayPanelSlot=null,_relayDialogAnchor=null;
+function _positionRelayDialog(){
+  if(window.innerWidth<=600)return;
+  const dlg=$('relayDialog'),anchor=_relayDialogAnchor;
+  if(!dlg||!anchor)return;
+  const r=anchor.getBoundingClientRect();
+  const dw=dlg.offsetWidth||360;
+  const dh=dlg.offsetHeight||300;
+  let left=r.left;
+  let top=r.bottom+8;
+  if(left+dw>window.innerWidth-8)left=window.innerWidth-dw-8;
+  if(left<8)left=8;
+  if(top+dh>window.innerHeight-8){
+    const above=r.top-dh-8;
+    top=above>=8?above:Math.max(8,window.innerHeight-dh-8);
+  }
+  dlg.style.cssText='margin:0;top:'+top+'px;left:'+left+'px';
+}
+function openRelayDialog(nid,e){
+  e.stopPropagation();
+  const panel=$('relayPanel'),body=$('relayDlgBody');
+  if(!panel||!body)return;
+  _relayPanelSlot={parent:panel.parentNode,next:panel.nextSibling};
+  body.appendChild(panel);
+  cNid=nid;
+  const n=NC.find(x=>x.id===nid);
+  if(n){updateDetail(n);const t=$('relayDlgTitle');if(t)t.textContent=n.label||('Node #'+nid);}
+  const dlg=$('relayDialog');
+  dlg.classList.remove('dlg-anchored');
+  dlg.style.cssText='';
+  dlg.showModal();
+  _relayDialogAnchor=e.currentTarget;
+  if(window.innerWidth>600){dlg.classList.add('dlg-anchored');_positionRelayDialog();}
+}
+function closeRelayDialog(){
+  const panel=$('relayPanel');
+  if(_relayPanelSlot&&panel){
+    _relayPanelSlot.parent.insertBefore(panel,_relayPanelSlot.next);
+    _relayPanelSlot=null;
+  }
+  _relayDialogAnchor=null;
+  const dlg=$('relayDialog');
+  if(dlg){dlg.classList.remove('dlg-anchored');dlg.style.cssText='';dlg.close();}
+}
+
 function setRelayTab(m){
   document.querySelectorAll('#relayTabs div').forEach(t=>t.classList.toggle('active',t.dataset.mode===m));
   const tabManual=$('tabManual');if(tabManual)tabManual.classList.toggle('active',m==='manual');
   const tabSchedule=$('tabSchedule');if(tabSchedule)tabSchedule.classList.toggle('active',m==='schedule');
+  if(_relayDialogAnchor)_positionRelayDialog();
 }
 function freezeAllCmds(){
   const cb=$('commitBanner');if(cb)cb.classList.add('show');
@@ -820,7 +869,13 @@ function freezeAllCmds(){
   const nb=$('detNudge');
   if(nb){nb.disabled=true;nb.style.opacity='.3';nb.style.pointerEvents='none';}
 }
-function doManual(c){pendingCmd[cNid]='relay_manual';wsSend({cmd:'relay_manual',node:cNid,state:c?1:0});freezeAllCmds();}
+function doManual(c){
+  pendingCmd[cNid]='relay_manual';
+  wsSend({cmd:'relay_manual',node:cNid,state:c?1:0});
+  freezeAllCmds();
+  const ni=NC.findIndex(x=>x.id===cNid);
+  if(ni>=0){NC[ni].relayState=c?1:0;const pg=$('pg-overview');if(pg&&pg.classList.contains('active'))renderGrid(NC);}
+}
 function doSchedule(){
   const sv=$('schedStart').value,ev=$('schedEnd').value;
   if(!sv||!ev){showToast('Set both start and end times.','warn');return;}
@@ -1420,8 +1475,8 @@ async function fetchFeatures(){
     const knn=!!d.knn;
     gwHasKnn=knn;
     const ks=$('knnSection');if(ks)ks.style.display=knn?'block':'none';
-    const dtp=$('detailTrainPanel');if(dtp)dtp.style.display=knn?'':'none';
-    if(knn){knnPopulateNodeSel();fetchKnnStatus();}
+    if(knn){applyKnnMgmt();knnPopulateNodeSel();fetchKnnStatus();}
+    else{const dtp=$('detailTrainPanel');if(dtp)dtp.style.display='none';}
   }catch(e){}
 }
 
@@ -1527,6 +1582,19 @@ async function knnFetchLabels(){
   }catch(e){}
 }
 
+function isKnnMgmt(){return localStorage.getItem('knnMgmt')==='1';}
+function setKnnMgmt(on){
+  localStorage.setItem('knnMgmt',on?'1':'0');
+  applyKnnMgmt();
+}
+function applyKnnMgmt(){
+  const on=isKnnMgmt();
+  const toggle=$('knnMgmtToggle');if(toggle)toggle.checked=on;
+  const ctrl=$('knnMgmtControls');if(ctrl)ctrl.style.display=on?'':'none';
+  const dtp=$('detailTrainPanel');
+  if(dtp)dtp.style.display=(gwHasKnn&&on)?'':'none';
+}
+
 async function knnTrainStart(){
   const nodeId=cNid;
   const label=($('knnTrainLabel')&&$('knnTrainLabel').value.trim())||'';
@@ -1578,6 +1646,8 @@ function updateKnnTrainBadge(){
   const stopBtn=$('knnStopBtn');
   if(startBtn)startBtn.style.display=training?'none':'';
   if(stopBtn)stopBtn.style.display=training?'':'none';
+  const lbl=$('knnTrainLabel');const dur=$('knnTrainDur');
+  if(lbl)lbl.disabled=training;if(dur)dur.disabled=training;
 }
 
 function knnFmtCountdown(sec){
@@ -1913,6 +1983,7 @@ function startApp(){
 function init(){
   document.addEventListener('DOMContentLoaded',async()=>{
     applyTheme(getTheme());
+    applyKnnMgmt();
     const cri=$('costRateIn');if(cri)cri.value=costRate;
     const bcl=$('btnClearLog');if(bcl)bcl.addEventListener('click',()=>{const b=$('serialLogBox');if(b)b.innerHTML='';});
     buildLogFilterRow();

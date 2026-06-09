@@ -16,6 +16,8 @@
 #define KNN_TRAIN_GAP_W      15.0f
 // Minimum samples per state; states below this are discarded as transients
 #define KNN_TRAIN_MIN_SAMPLES 10
+// Packets at or below this wattage are treated as no-load and skipped
+#define KNN_TRAIN_MIN_W       3.0f
 
 /** Per-state online streaming accumulator. */
 struct KnnTrainState {

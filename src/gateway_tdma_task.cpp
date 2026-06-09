@@ -532,6 +532,14 @@ static void evictStaleNodes() {
     ns->knnPrevW        = 0.0f;
     ns->knnVotePos      = 0;
     memset(ns->knnVoteBuf, 0xFF, sizeof(ns->knnVoteBuf));
+    // Abort any in-progress training session. Without this, a new node that
+    // joins the freed slot in the next superframe would silently accumulate
+    // into a session labeled for the evicted (different) appliance.
+    if (g_knnTrain[i].active) {
+      g_knnTrain[i].active    = false;
+      g_knnTrain[i].finalized = false;
+      logAsync("[KNN] Slot%d: training aborted (node evicted)\n", i + 1);
+    }
 #endif
     anyEvicted = true;
   }

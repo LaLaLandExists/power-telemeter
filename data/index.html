@@ -248,73 +248,6 @@
         <div class="side-col">
 
           <!-- Merged appliance / load inference -->
-          <div class="panel" id="inferencePanel" style="display:none" role="region" aria-label="Load inference">
-            <div class="panel-head"><span class="panel-title">Load Inference</span></div>
-            <div class="panel-body">
-              <!-- KNN appliance sub-section -->
-              <div id="infKnnSection" style="display:none">
-                <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-bottom:4px">
-                  <span id="knnDetLabel" class="M" style="font-size:18px;font-weight:700" aria-live="polite">--</span>
-                  <span id="knnDetState" class="hdr-badge M" style="font-size:9px"></span>
-                </div>
-                <div id="knnDetHint" style="font-size:10px;color:var(--txd);font-family:'Fira Code',monospace;line-height:1.6"></div>
-              </div>
-              <div id="infDivider" class="divider" style="display:none"></div>
-              <!-- Load classifier sub-section -->
-              <div id="infClfSection" style="display:none">
-                <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-bottom:6px">
-                  <span id="clfClass" class="M" style="font-size:20px;font-weight:700" aria-live="polite">--</span>
-                  <span id="clfConf" style="display:flex;gap:6px;align-items:center;flex:1;min-width:0"></span>
-                </div>
-                <div id="clfTrans" style="display:none;font-size:10px;color:var(--wn)" class="M" role="alert">
-                  <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" aria-hidden="true"><path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>
-                  Transient &mdash; classification may be unstable
-                </div>
-                <div id="clfHint" style="font-size:10px;color:var(--txd);font-family:'Fira Code',monospace;margin-top:8px;line-height:1.6"></div>
-              </div>
-            </div>
-          </div>
-
-          <!-- Appliance trainer (KNN_INFERENCE builds only) -->
-          <div class="panel" id="detailTrainPanel" style="display:none" role="region" aria-label="Train appliance">
-            <div class="panel-head">
-              <span class="panel-title">Train Appliance</span>
-              <span id="trainPanelBadge" class="hdr-badge M" style="display:none;font-size:9px;color:#f87171;background:#f871711f;border-color:#f871714d">Recording</span>
-            </div>
-            <div class="panel-body">
-              <div class="form-group" style="margin-bottom:8px">
-                <label class="form-label" for="knnTrainLabel">Appliance Label</label>
-                <input class="form-input M" type="text" id="knnTrainLabel" placeholder="e.g. Refrigerator" maxlength="23" spellcheck="false" autocomplete="off" list="knnLabelOpts">
-                <datalist id="knnLabelOpts"></datalist>
-              </div>
-              <div class="form-group" style="margin-bottom:10px">
-                <label class="form-label" for="knnTrainDur">Duration</label>
-                <select class="form-input M" id="knnTrainDur" style="font-size:11px">
-                  <option value="2">2 minutes</option>
-                  <option value="5" selected>5 minutes</option>
-                  <option value="10">10 minutes</option>
-                  <option value="15">15 minutes</option>
-                  <option value="30">30 minutes</option>
-                </select>
-              </div>
-              <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">
-                <button class="btn btn-primary M" id="knnTrainBtn" onclick="knnTrainStart()" style="font-size:11px;margin-top:0;width:auto;padding:8px 16px">
-                  <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" aria-hidden="true"><circle cx="12" cy="12" r="10"/><polygon points="10 8 16 12 10 16 10 8"/></svg>
-                  Start Training
-                </button>
-                <button class="btn btn-danger M" id="knnStopBtn" onclick="knnTrainStop(cNid)" style="font-size:11px;margin-top:0;width:auto;padding:8px 16px;display:none">
-                  <svg width="13" height="13" viewBox="0 0 24 24" fill="currentColor" stroke="none" aria-hidden="true"><rect x="5" y="5" width="14" height="14" rx="1.5"/></svg>
-                  Stop Training
-                </button>
-                <span class="M" id="knnTrainStatus" style="font-size:10px;color:var(--txd)" aria-live="polite"></span>
-              </div>
-              <div id="knnTrainCountdown" style="display:none;margin-top:10px;padding:8px 10px;background:rgba(248,113,113,.06);border:1px solid rgba(248,113,113,.2);border-radius:6px">
-                <div style="font-size:9px;color:var(--txd);margin-bottom:2px;text-transform:uppercase;letter-spacing:.04em">Time remaining</div>
-                <div id="knnCountdownVal" class="M" style="font-size:22px;font-weight:700;color:#f87171;font-variant-numeric:tabular-nums;letter-spacing:-.01em">0:00</div>
-              </div>
-            </div>
-          </div>
-
           <!-- Relay control -->
           <div class="panel" id="relayPanel" role="region" aria-label="Relay control">
             <div class="panel-head"><span class="panel-title">Relay Control</span></div>
@@ -370,6 +303,37 @@
             </div>
           </div>
 
+          <div class="panel" id="inferencePanel" style="display:none" role="region" aria-label="Load inference">
+            <div class="panel-head"><span class="panel-title">Load Inference</span></div>
+            <div class="panel-body">
+              <!-- KNN appliance sub-section -->
+              <div id="infKnnSection" style="display:none">
+                <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-bottom:4px">
+                  <span id="knnDetLabel" class="M" style="font-size:18px;font-weight:700" aria-live="polite">--</span>
+                  <span id="knnDetState" class="hdr-badge M" style="font-size:9px"></span>
+                </div>
+                <div id="knnDetHint" style="font-size:10px;color:var(--txd);font-family:'Fira Code',monospace;line-height:1.6"></div>
+              </div>
+              <div style="font-size:10px;color:var(--txd);font-family:'Fira Code',monospace;margin-top:6px" class="M">
+                <svg width="9" height="9" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" style="vertical-align:-1px;color:var(--wn)" aria-hidden="true"><path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>
+                Results may be unreliable if trained incorrectly. Use as a guide only.
+              </div>
+              <div id="infDivider" class="divider" style="display:none"></div>
+              <!-- Load classifier sub-section -->
+              <div id="infClfSection" style="display:none">
+                <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-bottom:6px">
+                  <span id="clfClass" class="M" style="font-size:20px;font-weight:700" aria-live="polite">--</span>
+                  <span id="clfConf" style="display:flex;gap:6px;align-items:center;flex:1;min-width:0"></span>
+                </div>
+                <div id="clfTrans" style="display:none;font-size:10px;color:var(--wn)" class="M" role="alert">
+                  <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" aria-hidden="true"><path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>
+                  Transient &mdash; classification may be unstable
+                </div>
+                <div id="clfHint" style="font-size:10px;color:var(--txd);font-family:'Fira Code',monospace;margin-top:8px;line-height:1.6"></div>
+              </div>
+            </div>
+          </div>
+
           <!-- Energy cost -->
           <div class="panel cc-nrg" role="region" aria-label="Estimated energy cost">
             <div class="panel-head"><span class="panel-title">Estimated Energy Cost</span></div>
@@ -417,6 +381,46 @@
                   <button class="thr-set-btn M" onclick="doSetThreshold()">Set</button>
                 </div>
                 <div style="font-size:10px;color:var(--txd);font-family:'Fira Code',monospace">PZEM alarm triggers when active power exceeds this threshold.</div>
+              </div>
+            </div>
+          </div>
+
+          <!-- Appliance trainer (KNN_INFERENCE builds only) -->
+          <div class="panel" id="detailTrainPanel" style="display:none" role="region" aria-label="Train appliance">
+            <div class="panel-head">
+              <span class="panel-title">Train Appliance</span>
+              <span id="trainPanelBadge" class="hdr-badge M" style="display:none;font-size:9px;color:#f87171;background:#f871711f;border-color:#f871714d">Recording</span>
+            </div>
+            <div class="panel-body">
+              <div class="form-group" style="margin-bottom:8px">
+                <label class="form-label" for="knnTrainLabel">Appliance Label</label>
+                <input class="form-input M" type="text" id="knnTrainLabel" placeholder="e.g. Refrigerator" maxlength="23" spellcheck="false" autocomplete="off" list="knnLabelOpts">
+                <datalist id="knnLabelOpts"></datalist>
+              </div>
+              <div class="form-group" style="margin-bottom:10px">
+                <label class="form-label" for="knnTrainDur">Duration</label>
+                <select class="form-input M" id="knnTrainDur" style="font-size:11px">
+                  <option value="2">2 minutes</option>
+                  <option value="5" selected>5 minutes</option>
+                  <option value="10">10 minutes</option>
+                  <option value="15">15 minutes</option>
+                  <option value="30">30 minutes</option>
+                </select>
+              </div>
+              <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">
+                <button class="btn btn-primary M" id="knnTrainBtn" onclick="knnTrainStart()" style="font-size:11px;margin-top:0;width:auto;padding:8px 16px">
+                  <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" aria-hidden="true"><circle cx="12" cy="12" r="10"/><polygon points="10 8 16 12 10 16 10 8"/></svg>
+                  Start Training
+                </button>
+                <button class="btn btn-danger M" id="knnStopBtn" onclick="knnTrainStop(cNid)" style="font-size:11px;margin-top:0;width:auto;padding:8px 16px;display:none">
+                  <svg width="13" height="13" viewBox="0 0 24 24" fill="currentColor" stroke="none" aria-hidden="true"><rect x="5" y="5" width="14" height="14" rx="1.5"/></svg>
+                  Stop Training
+                </button>
+                <span class="M" id="knnTrainStatus" style="font-size:10px;color:var(--txd)" aria-live="polite"></span>
+              </div>
+              <div id="knnTrainCountdown" style="display:none;margin-top:10px;padding:8px 10px;background:rgba(248,113,113,.06);border:1px solid rgba(248,113,113,.2);border-radius:6px">
+                <div style="font-size:9px;color:var(--txd);margin-bottom:2px;text-transform:uppercase;letter-spacing:.04em">Time remaining</div>
+                <div id="knnCountdownVal" class="M" style="font-size:22px;font-weight:700;color:#f87171;font-variant-numeric:tabular-nums;letter-spacing:-.01em">0:00</div>
               </div>
             </div>
           </div>
@@ -763,7 +767,7 @@
           </div>
 
           <!-- KNN Inference (hidden unless KNN_INFERENCE build) -->
-          <div id="knnSection" style="display:none;grid-column:1/-1">
+          <div id="knnSection" style="display:none">
             <div class="settings-grid" style="margin:0;padding:0">
 
               <!-- Model status + management -->
@@ -779,21 +783,38 @@
                     <div class="info-row"><span class="info-lbl">Source</span><span class="info-val M" id="knnModelSrc">--</span></div>
                   </div>
                   <div class="divider"></div>
-                  <div style="display:flex;gap:6px;flex-wrap:wrap">
-                    <button class="btn btn-ghost M" onclick="knnExport()" style="font-size:11px;margin-top:0;flex:1">
-                      <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" aria-hidden="true"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
-                      Export
-                    </button>
-                    <label class="btn btn-ghost M" style="font-size:11px;margin-top:0;flex:1;cursor:pointer;display:inline-flex;align-items:center;justify-content:center;gap:5px" title="Import model JSON">
-                      <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" aria-hidden="true"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>
-                      Import
-                      <input type="file" id="knnImportFile" accept=".json" style="display:none" onchange="knnImport(this)">
+                  <div style="display:flex;align-items:center;justify-content:space-between;gap:8px">
+                    <div>
+                      <div style="font-size:11px;font-weight:600;color:var(--tx)">Model Management</div>
+                      <div style="font-size:10px;color:var(--txd);font-family:'Fira Code',monospace">Enable training, import &amp; export</div>
+                    </div>
+                    <label class="tgl" aria-label="Toggle model management">
+                      <input type="checkbox" id="knnMgmtToggle" onchange="setKnnMgmt(this.checked)">
+                      <div class="ts"></div>
                     </label>
                   </div>
-                  <button class="btn btn-danger M" onclick="promptKnnReset(this)" style="font-size:11px;margin-top:8px">
-                    <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" aria-hidden="true"><polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14H6L5 6"/><path d="M10 11v6"/><path d="M14 11v6"/><path d="M9 6V4h6v2"/></svg>
-                    Factory Reset Model
-                  </button>
+                  <div id="knnMgmtControls" style="display:none">
+                    <div style="font-size:10px;color:var(--wn);font-family:'Fira Code',monospace;line-height:1.6;margin-top:8px;padding:8px 10px;border-radius:6px;background:rgba(255,159,67,.07);border:1px solid rgba(255,159,67,.2)" class="M">
+                      <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" style="vertical-align:-1px" aria-hidden="true"><path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>
+                      Incorrect or insufficient training data will degrade inference accuracy. Ensure each appliance is trained under realistic and stable operating conditions.
+                    </div>
+                    <div class="divider"></div>
+                    <div style="display:flex;gap:6px;flex-wrap:wrap">
+                      <button class="btn btn-ghost M" onclick="knnExport()" style="font-size:11px;margin-top:0;flex:1">
+                        <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" aria-hidden="true"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+                        Export
+                      </button>
+                      <label class="btn btn-ghost M" style="font-size:11px;margin-top:0;flex:1;cursor:pointer;display:inline-flex;align-items:center;justify-content:center;gap:5px" title="Import model JSON">
+                        <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" aria-hidden="true"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>
+                        Import
+                        <input type="file" id="knnImportFile" accept=".json" style="display:none" onchange="knnImport(this)">
+                      </label>
+                    </div>
+                    <button class="btn btn-danger M" onclick="promptKnnReset(this)" style="font-size:11px;margin-top:8px">
+                      <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" aria-hidden="true"><polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14H6L5 6"/><path d="M10 11v6"/><path d="M14 11v6"/><path d="M9 6V4h6v2"/></svg>
+                      Factory Reset Model
+                    </button>
+                  </div>
                   <div class="M" id="knnModelStatus" style="font-size:10px;color:var(--txd);margin-top:6px;min-height:14px" aria-live="polite"></div>
                 </div>
               </div>
@@ -880,6 +901,17 @@
 
 <!-- Toast container -->
 <div id="toastContainer" aria-live="polite" aria-atomic="false"></div>
+
+<!-- Relay quick dialog -->
+<dialog id="relayDialog" aria-modal="true" aria-label="Relay control" onclick="if(event.target===this)closeRelayDialog()">
+  <div class="dlg-inner">
+    <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:16px">
+      <h3 class="dlg-title" id="relayDlgTitle" style="margin:0">Relay Control</h3>
+      <button class="btn btn-ghost" onclick="closeRelayDialog()" style="margin:0;width:auto;padding:4px 12px;font-size:11px">Close</button>
+    </div>
+    <div id="relayDlgBody"></div>
+  </div>
+</dialog>
 
 <!-- Confirm dialog -->
 <dialog id="confirmDialog" aria-modal="true">

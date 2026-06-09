@@ -48,6 +48,7 @@ static void knnTrainingFinalize(uint8_t slotIdx)
   for (uint8_t s = 0; s < sess.nStates; s++) {
     KnnTrainState& st = sess.states[s];
     if (st.cnt < KNN_TRAIN_MIN_SAMPLES) continue;
+    if (st.wCenter < KNN_TRAIN_MIN_W) continue;  // discard no-load buckets
     if (nValid >= KNN_MAX_STATES) break;
 
     KnnStateCentroid& cen = prof.states[nValid];
@@ -149,6 +150,7 @@ void knnTrainAccumulate(uint8_t slotIdx, const TelemetryPacket& pkt)
   }
 
   float W   = pkt.power       / 10.0f;
+  if (W < KNN_TRAIN_MIN_W) return;  // skip no-load / interruption packets
   float V   = pkt.voltage     / 10.0f;
   float A   = pkt.current     / 1000.0f;
   float PF  = pkt.powerFactor / 100.0f;
