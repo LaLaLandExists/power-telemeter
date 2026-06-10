@@ -131,12 +131,6 @@ static void nodeTdmaTask(void* /*params*/) {
         rtcConditionalSync(bcn.hour, bcn.minute, bcn.second);
         evaluateSchedule();
 
-        if (g_nodeRegistered) {
-          if (bcn.epoch != (uint8_t)(sfCount & 0xFF)) { // s_joinEpoch comparison kept local
-            // epoch check uses local variable -- see s_joinEpoch below
-          }
-        }
-
         // epoch / slot mask checks handled below via local s_joinEpoch
       } else if (state != ST_LISTEN) {
         logAsync("[NODE-TDMA] Beacon timeout - re-listening\n");

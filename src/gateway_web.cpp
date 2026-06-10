@@ -55,7 +55,7 @@ static AsyncWebSocket ws("/ws");
 static String   s_dashPassword   = "";       // empty = no auth required
 static char     s_sessionToken[33] = {};     // 32-char hex + null; empty = no session
 
-static uint32_t s_authWsIds[8]   = {};
+static uint32_t s_authWsIds[16]  = {};
 static uint8_t  s_authWsCount    = 0;
 
 // -- WS broadcast queue (uint8_t slotIdx, depth 16) ---------------------------
@@ -90,7 +90,7 @@ static void generateToken() {
   }
 }
 
-static bool webCheckAuth(AsyncWebServerRequest *req) {
+bool webCheckAuth(AsyncWebServerRequest *req) {
   if (s_dashPassword.isEmpty()) return true;
   if (s_sessionToken[0] == '\0') return false;
   if (!req->hasHeader("X-Auth-Token")) return false;
@@ -100,7 +100,7 @@ static bool webCheckAuth(AsyncWebServerRequest *req) {
 static void wsAuthAdd(uint32_t id) {
   for (uint8_t i = 0; i < s_authWsCount; i++)
     if (s_authWsIds[i] == id) return;
-  if (s_authWsCount < 8) s_authWsIds[s_authWsCount++] = id;
+  if (s_authWsCount < 16) s_authWsIds[s_authWsCount++] = id;
 }
 
 static void wsAuthRemove(uint32_t id) {
@@ -237,15 +237,19 @@ static void doBroadcastTelemetry(uint8_t slotIdx)
   doc["type"] = "telemetry";
 
   JsonObject nodeObj = doc["node"].to<JsonObject>();
+  bool nodeActive = false;
 
   if (xSemaphoreTake(g_nodesMutex, pdMS_TO_TICKS(10)) == pdTRUE)
   {
     if (g_nodes[slotIdx].active)
     {
+      nodeActive = true;
       nodeToDetailJson(nodeObj, g_nodes[slotIdx]);
     }
     xSemaphoreGive(g_nodesMutex);
   }
+
+  if (!nodeActive) return;
 
   char timeBuf[9];
   gwTimeString(timeBuf);
@@ -450,7 +454,8 @@ static void handleWsMessage(AsyncWebSocketClient *client, const String &payload)
     bool ok = false;
     if (idx != 0xFF)
     {
-      uint8_t pkt[7] = {PKT_RELAY_SCHEDULE, nodeId, 1,
+      uint8_t onState = (doc["onState"] | 1) ? 1 : 0;
+      uint8_t pkt[7] = {PKT_RELAY_SCHEDULE, nodeId, onState,
                         startH, startM, endH, endM};
       ok = tdmaQueueCommand(idx, pkt, 7);
     }
@@ -530,7 +535,7 @@ static void handleWsMessage(AsyncWebSocketClient *client, const String &payload)
         strlcpy(g_nodes[idx].label, name, sizeof(g_nodes[idx].label));
         xSemaphoreGive(g_nodesMutex);
       }
-      framSaveLabel(idx);
+      framQueueSaveLabel(idx);
       // Broadcast name_changed to ALL clients
       JsonDocument bcast;
       bcast["type"] = "name_changed";
@@ -550,7 +555,7 @@ static void handleWsMessage(AsyncWebSocketClient *client, const String &payload)
     if (doc["utcOffset"].is<int32_t>())
     {
       int32_t off = (int32_t)doc["utcOffset"];
-      if (off >= -43200 * 60 && off <= 50400 * 60) // sanity: UTC-12 .. UTC+14
+      if (off >= -43200 && off <= 50400) // sanity: UTC-12 .. UTC+14
         wifiSetTzOffset(off);
     }
 
@@ -594,6 +599,7 @@ static void handleWsMessage(AsyncWebSocketClient *client, const String &payload)
         g_nodes[idx].accumEnergy = 0;
         xSemaphoreGive(g_nodesMutex);
       }
+      framQueueSave(idx, true, false);
     }
     JsonDocument ack;
     ack["type"] = "energy_cleared";
@@ -613,6 +619,10 @@ static void handleWsMessage(AsyncWebSocketClient *client, const String &payload)
         g_nodes[i].accumEnergy = 0;
       }
       xSemaphoreGive(g_nodesMutex);
+    }
+    for (uint8_t i = 0; i < MAX_NODES; i++)
+    {
+      if (g_nodes[i].active) framQueueSave(i, true, false);
     }
     JsonDocument ack;
     ack["type"] = "all_energy_cleared";
@@ -1091,7 +1101,6 @@ static void handlePostLogin(AsyncWebServerRequest *req) {
     body += "\"}";
     req->send(200, "application/json", body);
   } else {
-    memset(s_sessionToken, 0, sizeof(s_sessionToken));
     req->send(401, "application/json", "{\"ok\":false}");
   }
 }
@@ -1346,6 +1355,19 @@ void webServerSetup()
       for (uint8_t st = 0; st < s.nStates; st++) total += s.states[st].cnt;
       obj["samples"] = total;
       obj["nStates"] = s.nStates;
+    }
+    String json;
+    serializeJson(doc, json);
+    req->send(200, "application/json", json);
+  });
+
+  server.on("/api/knn/labels", HTTP_GET, [](AsyncWebServerRequest* req) {
+    if (!webCheckAuth(req)) { req->send(401, "application/json", "{\"error\":\"unauthorized\"}"); return; }
+    JsonDocument doc;
+    JsonArray arr = doc["labels"].to<JsonArray>();
+    if (xSemaphoreTake(g_knnMutex, pdMS_TO_TICKS(20)) == pdTRUE) {
+      for (uint8_t i = 0; i < g_knnDb.labelCount; i++) arr.add(g_knnDb.labels[i]);
+      xSemaphoreGive(g_knnMutex);
     }
     String json;
     serializeJson(doc, json);

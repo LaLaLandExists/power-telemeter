@@ -41,3 +41,10 @@ void webBroadcastAllNodes();
  */
 void webBroadcastBulkEvent();
 
+/**
+ * Returns true if the request is authorized (no password set, or valid token).
+ * Used by gateway_wifi_config.cpp to protect sensitive WiFi-config routes.
+ */
+class AsyncWebServerRequest;  // forward declaration; full def in ESPAsyncWebServer.h
+bool webCheckAuth(AsyncWebServerRequest *req);
+

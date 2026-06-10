@@ -71,7 +71,8 @@ static uint8_t IRAM_ATTR knnSearch(const float* norm_feat,
       const KnnStateCentroid& c = pr.states[s];
       float d = 0.0f;
       for (uint8_t f = 0; f < KNN_FEATURES; f++) {
-        float diff = norm_feat[f] - c.centroid[f];
+        float sig  = (g_knnDb.normSigma[f] > 1e-6f) ? g_knnDb.normSigma[f] : 1.0f;
+        float diff = norm_feat[f] - (c.centroid[f] - g_knnDb.normMu[f]) / sig;
         d += diff * diff;
       }
       if (d < best) {
@@ -87,6 +88,22 @@ static uint8_t IRAM_ATTR knnSearch(const float* norm_feat,
   *out_dist  = best;
   *out_label = best_lbl;
   return best_p;
+}
+
+// ---------------------------------------------------------------------------
+// Minimum normSigma^2 across features -- used to convert raw radiusSq to
+// normalized space conservatively (dividing by the smallest scale^2 gives
+// the largest normalized radius, so we never reject valid matches).
+// Must be called under g_knnMutex.
+// ---------------------------------------------------------------------------
+static float knnMinNormSigSq()
+{
+  float mn = 1.0f;
+  for (uint8_t f = 0; f < KNN_FEATURES; f++) {
+    float s2 = g_knnDb.normSigma[f] * g_knnDb.normSigma[f];
+    if (s2 > 1e-6f && s2 < mn) mn = s2;
+  }
+  return mn;
 }
 
 // ---------------------------------------------------------------------------
@@ -178,16 +195,18 @@ void knnInferStep(uint8_t slotIdx, const TelemetryPacket& pkt)
         bool state_match = false;
 
         if (xSemaphoreTake(g_knnMutex, pdMS_TO_TICKS(5)) == pdTRUE) {
+          float min_sig2 = knnMinNormSigSq();
           for (uint8_t p = 0; p < g_knnDb.profileCount && !state_match; p++) {
             if (g_knnDb.profiles[p].labelIdx != curLabel) continue;
             for (uint8_t s = 0; s < g_knnDb.profiles[p].nStates; s++) {
               const KnnStateCentroid& c = g_knnDb.profiles[p].states[s];
               float d = 0.0f;
               for (uint8_t f = 0; f < KNN_FEATURES; f++) {
-                float diff = norm_feat[f] - c.centroid[f];
+                float sig  = (g_knnDb.normSigma[f] > 1e-6f) ? g_knnDb.normSigma[f] : 1.0f;
+                float diff = norm_feat[f] - (c.centroid[f] - g_knnDb.normMu[f]) / sig;
                 d += diff * diff;
               }
-              if (d <= c.radiusSq * REJECT_MULT) { state_match = true; break; }
+              if (d <= (c.radiusSq / min_sig2) * REJECT_MULT) { state_match = true; break; }
             }
           }
           xSemaphoreGive(g_knnMutex);
@@ -221,10 +240,12 @@ void knnInferStep(uint8_t slotIdx, const TelemetryPacket& pkt)
       if (xSemaphoreTake(g_knnMutex, pdMS_TO_TICKS(5)) == pdTRUE) {
         best_p = knnSearch(norm_feat, &best_state, &dist, &best_lbl);
         if (best_p != 0xFF) {
-          // Rejection threshold: max radiusSq of nearest profile * REJECT_MULT
+          // Rejection threshold: max radiusSq of nearest profile scaled to
+          // normalized space (raw radiusSq / min normSigma^2) * REJECT_MULT.
+          float min_sig2 = knnMinNormSigSq();
           float max_r = 0.0f;
           for (uint8_t s = 0; s < g_knnDb.profiles[best_p].nStates; s++) {
-            float r = g_knnDb.profiles[best_p].states[s].radiusSq;
+            float r = g_knnDb.profiles[best_p].states[s].radiusSq / min_sig2;
             if (r > max_r) max_r = r;
           }
           if (dist > max_r * REJECT_MULT) { best_p = 0xFF; best_lbl = 0xFF; }

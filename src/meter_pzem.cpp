@@ -31,7 +31,7 @@ void meterTaskFn(void* /*params*/) {
         g_meter.voltage     = v;
         g_meter.current     = i;
         g_meter.power       = p;
-        g_meter.energy      = isnan(e) ? g_meter.energy : (uint32_t)e;
+        g_meter.energy      = isnan(e) ? g_meter.energy : (uint32_t)(e * 1000.0f + 0.5f);
         g_meter.frequency   = f;
         g_meter.powerFactor = isnan(pf) ? 0.0f : pf;
         g_meter.valid       = true;

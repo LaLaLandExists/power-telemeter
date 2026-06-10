@@ -32,6 +32,7 @@ extern uint8_t  g_relayState;   // 0=OFF, 1=ON
 extern uint8_t  g_relayMode;    // 0=MANUAL, 1=SCHEDULED
 extern uint8_t  g_schedState;   // 0=NONE, 1=WAITING, 2=ACTIVE
 extern uint8_t  g_schedSH, g_schedSM, g_schedEH, g_schedEM;
+extern uint8_t  g_schedOnState; // relay state INSIDE window (0=OFF, 1=ON)
 
 extern uint32_t g_rtcBaseSec;
 extern uint32_t g_rtcBaseMs;

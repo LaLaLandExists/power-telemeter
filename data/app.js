@@ -189,7 +189,7 @@ function sT(id,v){const e=$(id);if(e)e.textContent=v;}
 function sB(id,v,mx){const e=$(id);if(e)e.style.width=Math.min(100,Math.max(0,(v/mx)*100))+'%';}
 function fU(s){if(!s||s<0)return'--';return Math.floor(s/3600)+'h '+Math.floor((s%3600)/60)+'m '+(s%60)+'s';}
 function fP(w){return w>=1000?(w/1000).toFixed(1)+'k':w.toFixed(0);}
-function esc(s){const d=document.createElement('div');d.textContent=s;return d.innerHTML;}
+function esc(s){const d=document.createElement('div');d.textContent=s;return d.innerHTML.replace(/"/g,'&quot;');}
 function pad2(n){return String(n).padStart(2,'0');}
 function rssiToBars(r){if(r>=-55)return 4;if(r>=-65)return 3;if(r>=-75)return 2;return 1;}
 
@@ -333,6 +333,7 @@ function connectWS(){
   socket=new WebSocket(u);
   socket.onopen=()=>{
     wsOk=true;wsDot(true);
+    clearInterval(fbT);fbT=null;
     socket.send(JSON.stringify({cmd:'auth',token:authToken||''}));
   };
   socket.onmessage=e=>{try{onMsg(JSON.parse(e.data));}catch(x){}};

@@ -266,6 +266,7 @@ void framSaveLabel(uint8_t nodeIdx)
 // Deferred save/restore task -- keeps I2C off the Core 1 TDMA task
 // ---------------------------------------------------------------------------
 
+#define FRAM_SAVE_LABEL   0x08u  // nodeIdx in bits 2:0 (0-7 fits in 3 bits)
 #define FRAM_SAVE_ENERGY  0x10u
 #define FRAM_SAVE_HISTORY 0x20u
 #define FRAM_RESTORE      0x40u
@@ -287,16 +288,23 @@ static struct {
 void framQueueSave(uint8_t nodeIdx, bool saveEnergy, bool saveHistory)
 {
   if (!s_framQueue) return;
-  uint8_t msg = (nodeIdx & 0x0Fu)
+  uint8_t msg = (nodeIdx & 0x07u)
                 | (saveEnergy  ? FRAM_SAVE_ENERGY  : 0u)
                 | (saveHistory ? FRAM_SAVE_HISTORY : 0u);
+  xQueueSend(s_framQueue, &msg, 0);
+}
+
+void framQueueSaveLabel(uint8_t nodeIdx)
+{
+  if (!s_framQueue) return;
+  uint8_t msg = (nodeIdx & 0x07u) | FRAM_SAVE_LABEL;
   xQueueSend(s_framQueue, &msg, 0);
 }
 
 void framQueueRestore(uint8_t nodeIdx)
 {
   if (!s_framQueue) return;
-  uint8_t msg = (nodeIdx & 0x0Fu) | FRAM_RESTORE;
+  uint8_t msg = (nodeIdx & 0x07u) | FRAM_RESTORE;
   xQueueSend(s_framQueue, &msg, 0);
 }
 
@@ -319,8 +327,29 @@ static void framTask(void* /*params*/)
     if (msg == FRAM_SAVE_KNN) { knnFramSave_fromTask(); continue; }
 #endif
 
-    uint8_t idx = msg & 0x0Fu;
+    uint8_t idx = msg & 0x07u;
     if (idx >= MAX_NODES) continue;
+
+    // --- SAVE LABEL ---------------------------------------------------------
+    if (msg & FRAM_SAVE_LABEL) {
+      if (xSemaphoreTake(g_nodesMutex, pdMS_TO_TICKS(20)) == pdTRUE) {
+        s_snap.deviceUID = g_nodes[idx].deviceUID;
+        strlcpy(s_snap.label, g_nodes[idx].label, LABEL_BYTES);
+        xSemaphoreGive(g_nodesMutex);
+      } else continue;
+      if (s_snap.deviceUID == 0x0000 || s_snap.deviceUID == 0xFFFF) continue;
+
+      uint8_t framSlot = framFindSlot(s_snap.deviceUID);
+      if (framSlot == 0xFF) framSlot = framAllocFifoSlot();
+
+      uint16_t base = nodeBase(framSlot);
+      s_fram.write16(base + OFF_UID, s_snap.deviceUID);
+      s_fram.write(base + OFF_LABEL,
+                   reinterpret_cast<uint8_t*>(s_snap.label), LABEL_BYTES);
+      logAsync("[FRAM] UID=0x%04X: saved label \"%s\" to FRAM slot %u\n",
+               s_snap.deviceUID, s_snap.label, framSlot + 1);
+      continue;
+    }
 
     // --- RESTORE ------------------------------------------------------------
     if (msg & FRAM_RESTORE) {
@@ -390,7 +419,7 @@ static void framTask(void* /*params*/)
         s_snap.accumEnergy = g_nodes[idx].accumEnergy;
         strlcpy(s_snap.label, g_nodes[idx].label, LABEL_BYTES);
         xSemaphoreGive(g_nodesMutex);
-      }
+      } else continue;
       if (s_snap.deviceUID == 0x0000 || s_snap.deviceUID == 0xFFFF) continue;
 
       uint8_t framSlot = framFindSlot(s_snap.deviceUID);
@@ -416,7 +445,7 @@ static void framTask(void* /*params*/)
         strlcpy(s_snap.label, g_nodes[idx].label, LABEL_BYTES);
         memcpy(s_snap.history, g_nodes[idx].history, sizeof(s_snap.history));
         xSemaphoreGive(g_nodesMutex);
-      }
+      } else continue;
       if (s_snap.deviceUID == 0x0000 || s_snap.deviceUID == 0xFFFF) continue;
 
       uint8_t framSlot = framFindSlot(s_snap.deviceUID);

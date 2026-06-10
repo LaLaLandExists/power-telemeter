@@ -20,3 +20,4 @@ rollback/**
 **/*.bak
 **/*.000
 **/*-rescue-backup/
+issues.md

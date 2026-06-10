@@ -417,14 +417,16 @@ static void btnTask(void*) {
       if (held < 80) { vTaskDelay(pdMS_TO_TICKS(50)); continue; }  // debounce glitch
 
       if (held >= 3000) {
+#ifdef PKT_ENCRYPTION
         // Rapid red blink -- visual confirmation before clearing key
         for (int i = 0; i < 6; i++) {
           digitalWrite(LED_RED_PIN_, i & 1 ? HIGH : LOW);
           vTaskDelay(pdMS_TO_TICKS(80));
         }
         logAsync("[NODE] Button long-press -- clearing encryption key, rebooting\n");
-#ifdef PKT_ENCRYPTION
         cryptoClearKey();
+#else
+        logAsync("[NODE] Button long-press -- rebooting\n");
 #endif
       } else {
         logAsync("[NODE] Button press -- rebooting\n");

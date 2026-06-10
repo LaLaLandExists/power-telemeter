@@ -16,6 +16,7 @@
  */
 
 #include "gateway_wifi_config.h"
+#include "gateway_web.h"
 #include "gateway_state.h"
 #include "log_async.h"
 #include "tdma_protocol.h"
@@ -368,6 +369,7 @@ static void handleScan(AsyncWebServerRequest *req)
 
 static void handleConnect(AsyncWebServerRequest *req)
 {
+  if (!webCheckAuth(req)) { req->send(401, "application/json", "{\"error\":\"unauthorized\"}"); return; }
   String ssid = "", pass = "";
   if (req->hasParam("ssid", true))
     ssid = req->getParam("ssid", true)->value();
@@ -421,6 +423,7 @@ static void handleWifiStatus(AsyncWebServerRequest *req)
 
 static void handleDisconnect(AsyncWebServerRequest *req)
 {
+  if (!webCheckAuth(req)) { req->send(401, "application/json", "{\"error\":\"unauthorized\"}"); return; }
   WiFi.setAutoReconnect(false); // make disconnect sticky
   WiFi.disconnect(false);
   s_staConnected = false;
@@ -443,6 +446,7 @@ static void handleDisconnect(AsyncWebServerRequest *req)
 
 static void handleForget(AsyncWebServerRequest *req)
 {
+  if (!webCheckAuth(req)) { req->send(401, "application/json", "{\"error\":\"unauthorized\"}"); return; }
   nvsClear();
   WiFi.setAutoReconnect(false);
   WiFi.disconnect(false);
@@ -473,6 +477,7 @@ static void handleGetStaticIp(AsyncWebServerRequest *req)
 // POST /api/staticip -- body: ip=&gateway=&subnet=&dns=
 static void handleSetStaticIp(AsyncWebServerRequest *req)
 {
+  if (!webCheckAuth(req)) { req->send(401, "application/json", "{\"error\":\"unauthorized\"}"); return; }
   String ip = "", gw = "", sn = "255.255.255.0", dns1 = "";
   if (req->hasParam("ip",      true)) ip   = req->getParam("ip",      true)->value();
   if (req->hasParam("gateway", true)) gw   = req->getParam("gateway", true)->value();
@@ -516,6 +521,7 @@ static void handleGetAp(AsyncWebServerRequest *req)
 // POST /api/ap -- body: password=<string> (blank = open network, min 8 chars if non-empty)
 static void handleSetAp(AsyncWebServerRequest *req)
 {
+  if (!webCheckAuth(req)) { req->send(401, "application/json", "{\"error\":\"unauthorized\"}"); return; }
   String pass = "";
   if (req->hasParam("password", true))
     pass = req->getParam("password", true)->value();

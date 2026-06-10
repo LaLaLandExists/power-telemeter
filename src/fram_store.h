@@ -105,6 +105,13 @@ void framTaskStart();
 void framQueueSave(uint8_t nodeIdx, bool saveEnergy, bool saveHistory);
 
 /**
+ * Queue a deferred label-only FRAM save.
+ * Safe to call from any task or core (including AsyncTCP web handlers).
+ * @param nodeIdx  0-based node index (0-7)
+ */
+void framQueueSaveLabel(uint8_t nodeIdx);
+
+/**
  * Queue a deferred FRAM restore for a newly joined node.
  * The FRAM task searches all 8 slots by g_nodes[nodeIdx].deviceUID:
  *   found     -> restore label, energy, history as hints

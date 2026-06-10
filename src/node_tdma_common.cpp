@@ -54,10 +54,11 @@ uint8_t  g_classByte      = CLASS_BYTE_UNSUPPORTED;
 uint8_t  g_relayState = 0;
 uint8_t  g_relayMode  = 0;
 uint8_t  g_schedState = 0;
-uint8_t  g_schedSH    = 0;
-uint8_t  g_schedSM    = 0;
-uint8_t  g_schedEH    = 8;
-uint8_t  g_schedEM    = 0;
+uint8_t  g_schedSH      = 0;
+uint8_t  g_schedSM      = 0;
+uint8_t  g_schedEH      = 8;
+uint8_t  g_schedEM      = 0;
+uint8_t  g_schedOnState = 1; // relay state inside window (default ON)
 
 uint32_t g_rtcBaseSec = 0;
 uint32_t g_rtcBaseMs  = 0;
@@ -138,7 +139,7 @@ void evaluateSchedule() {
     logAsync("[NODE-SCHED] %s (now=%02d:%02d)\n",
              inside ? "ACTIVE" : "WAITING", nowMins / 60, nowMins % 60);
   }
-  setRelay(inside ? 1 : 0);
+  setRelay(inside ? g_schedOnState : (uint8_t)(1u - g_schedOnState));
 }
 
 // =============================================================================
@@ -216,15 +217,16 @@ void handleDownlink(const uint8_t* buf, int16_t len) {
     break;
   case PKT_RELAY_SCHEDULE:
     if (len >= 7) {
-      g_relayMode  = 1;
-      g_schedSH    = buf[3];
-      g_schedSM    = buf[4];
-      g_schedEH    = buf[5];
-      g_schedEM    = buf[6];
-      g_schedState = 1;
+      g_relayMode    = 1;
+      g_schedOnState = buf[2] ? 1 : 0;
+      g_schedSH      = buf[3];
+      g_schedSM      = buf[4];
+      g_schedEH      = buf[5];
+      g_schedEM      = buf[6];
+      g_schedState   = 1;
       evaluateSchedule();
-      logAsync("[NODE-DL] Schedule set %02d:%02d - %02d:%02d\n",
-               g_schedSH, g_schedSM, g_schedEH, g_schedEM);
+      logAsync("[NODE-DL] Schedule set %02d:%02d - %02d:%02d onState=%d\n",
+               g_schedSH, g_schedSM, g_schedEH, g_schedEM, g_schedOnState);
     }
     break;
   case PKT_RELAY_CLEAR:
@@ -297,6 +299,11 @@ void buildTelemetryPacket(TelemetryPacket& pkt) {
       energyDelta = rawEnergy - s_lastPzemEnergy;
     } else {
       energyDelta = (PZEM_ENERGY_MAX_WH - s_lastPzemEnergy) + rawEnergy;
+    }
+    // Sanity cap: more than ~500 Wh in one superframe is physically impossible;
+    // treat it as a counter reset and emit delta 0 to avoid corrupting accumEnergy.
+    if (energyDelta > 500) {
+      energyDelta = 0;
     }
     s_lastPzemEnergy = rawEnergy;
     pkt.energy = energyDelta;
@@ -410,6 +417,14 @@ static void nodeRunBulkReceive(uint16_t sfCount) {
 
     const BulkFragHeader* hdr = reinterpret_cast<const BulkFragHeader*>(fragBuf);
     uint8_t* payload = fragBuf + BULK_FRAG_HEADER_LEN;
+
+    // Duplicate fragment: our ACK was lost; re-ACK without storing payload.
+    if (hdr->pktType == PKT_BULK_FRAG && hdr->seqNum == (uint8_t)(expSeq - 1)) {
+      BulkAckPacket ack; ack.seqNum = hdr->seqNum; ack.pktType = PKT_BULK_ACK;
+      memcpy(ackBuf, &ack, sizeof(ack));
+      radio.transmit(ackBuf, sizeof(ackBuf));
+      radio.startReceive(); continue;
+    }
 
     if (hdr->pktType != PKT_BULK_FRAG || hdr->seqNum != expSeq ||
         hdr->payloadLen == 0 || hdr->payloadLen > BULK_FRAG_PAYLOAD) {

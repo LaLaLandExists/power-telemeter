@@ -247,6 +247,17 @@ static void runBulkReceive() {
     const BulkFragHeader* hdr = reinterpret_cast<const BulkFragHeader*>(fragBuf);
     uint8_t* payload = fragBuf + BULK_FRAG_HEADER_LEN;
 
+    // Duplicate fragment: our ACK was lost; re-ACK without storing payload.
+    if (hdr->pktType == PKT_BULK_FRAG && hdr->seqNum == (uint8_t)(expSeq - 1)) {
+      BulkAckPacket ack;
+      ack.seqNum  = hdr->seqNum;
+      ack.pktType = PKT_BULK_ACK;
+      memcpy(ackBuf, &ack, sizeof(ack));
+      radio.transmit(ackBuf, sizeof(ackBuf));
+      radio.startReceive();
+      continue;
+    }
+
     if (hdr->pktType != PKT_BULK_FRAG || hdr->seqNum != expSeq ||
         hdr->payloadLen == 0 || hdr->payloadLen > BULK_FRAG_PAYLOAD) {
       BulkAckPacket nack;
@@ -267,6 +278,7 @@ static void runBulkReceive() {
       bufOff += hdr->payloadLen;
     }
     bs->fragsAcked++;
+    bs->fragsSent++;
 
     BulkAckPacket ack;
     ack.seqNum  = hdr->seqNum;
@@ -326,8 +338,8 @@ static void addHistory(NodeState* ns, const TelemetryPacket& pkt) {
 // -----------------------------------------------------------------------------
 // Process a received TelemetryPacket
 // -----------------------------------------------------------------------------
-static void processUplink(uint8_t slotIdx, const TelemetryPacket& pkt, int16_t rssi) {
-  if (xSemaphoreTake(g_nodesMutex, pdMS_TO_TICKS(5)) != pdTRUE) return;
+static bool processUplink(uint8_t slotIdx, const TelemetryPacket& pkt, int16_t rssi) {
+  if (xSemaphoreTake(g_nodesMutex, pdMS_TO_TICKS(5)) != pdTRUE) return false;
 
   NodeState* ns = &g_nodes[slotIdx];
 
@@ -339,7 +351,7 @@ static void processUplink(uint8_t slotIdx, const TelemetryPacket& pkt, int16_t r
     logAsync("[GW-UL] Slot%d UID mismatch (rx=0x%04X exp=0x%04X) - ignoring UL\n",
              slotIdx + 1, pkt.uid, ns->deviceUID);
     xSemaphoreGive(g_nodesMutex);
-    return;
+    return false;
   }
 
   memcpy(&ns->latest, &pkt, sizeof(TelemetryPacket));
@@ -421,6 +433,7 @@ static void processUplink(uint8_t slotIdx, const TelemetryPacket& pkt, int16_t r
            pkt.power   / 10.0f,
            (unsigned long)ns->accumEnergy,
            rssi);
+  return true;
 }
 
 // -----------------------------------------------------------------------------
@@ -687,12 +700,11 @@ static void gatewayTdmaTask(void* /*params*/) {
                                (uint8_t)(s + 1), PKT_DIR_UL) &&
                     ulPkt.pktType == PKT_TELEMETRY &&
                     ulPkt.nodeId  == (uint8_t)(s + 1));
-      if (gotUl) {
-        processUplink(s, ulPkt, rssi);
+      if (gotUl && processUplink(s, ulPkt, rssi)) {
+        // processUplink() resets missedSfs on success.
       } else {
-        // Count this as a missed superframe for this slot.
-        // processUplink() resets missedSfs on a successful UL; we only
-        // increment here, never in evictStaleNodes(), so active nodes are immune.
+        // Count as a missed superframe: no valid UL, or UID mismatch (foreign
+        // transmitter in our slot -- registered node is still effectively absent).
         if (xSemaphoreTake(g_nodesMutex, pdMS_TO_TICKS(5)) == pdTRUE) {
           if (g_nodes[s].active) g_nodes[s].missedSfs++;
           xSemaphoreGive(g_nodesMutex);
@@ -858,9 +870,8 @@ bool bulkEnqueue(uint8_t slotIdx, uint8_t dir, uint8_t typeTag,
 }
 
 void bulkAbort() {
-  // Write FAILED first so Core 1 sees it immediately on next iteration
-  g_bulkSession.state = BULK_FAILED;
   if (xSemaphoreTake(g_nodesMutex, pdMS_TO_TICKS(20)) == pdTRUE) {
+    g_bulkSession.state = BULK_FAILED;
     if (g_bulkSession.slotIdx < MAX_NODES) {
       g_nodes[g_bulkSession.slotIdx].bulkGrantPending = false;
     }
