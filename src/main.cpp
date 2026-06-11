@@ -160,6 +160,7 @@
   uint8_t LED_GREEN_PIN = LED_GREEN_PIN_;
   uint8_t LED_RED_PIN   = LED_RED_PIN_;
   uint8_t DIO0_PIN      = LORA_PIN_DIO0;
+  uint8_t LORA_NSS_PIN  = LORA_PIN_NSS;
 #endif
 
 // --- Hardware instances -------------------------------------------------------

@@ -23,8 +23,10 @@
  */
 
 #include "node_tdma_task.h"
+#include "lora_hal.h"
 #include "log_async.h"
 #include <RadioLib.h>
+#include <esp_system.h>  // esp_reset_reason() for crash-resume
 #ifndef PZEM_FAKE
 #include <PZEM004Tv30.h>
 #endif
@@ -37,6 +39,7 @@ extern uint8_t RELAY_PIN;       // Defined in main.cpp (NODE_TELEMETRY build)
 extern uint8_t LED_GREEN_PIN;   // Defined in main.cpp (NODE_TELEMETRY build)
 extern uint8_t LED_RED_PIN;     // Defined in main.cpp (NODE_TELEMETRY build)
 extern uint8_t DIO0_PIN;        // Defined in main.cpp (NODE_TELEMETRY build)
+extern uint8_t LORA_NSS_PIN;    // Defined in main.cpp (NODE_TELEMETRY build)
 
 // --- Radio instance (defined in main.cpp) ------------------------------------
 extern SX1278 radio;
@@ -72,6 +75,8 @@ static int8_t  g_beaconRSSI       = -128;
 static uint8_t s_joinEpoch        = 0xFF; // epoch captured at last successful JoinAck
 static uint8_t s_lastBeaconEpoch  = 0xFF; // epoch from most recently received beacon
 
+static void radioReinit(); // forward declaration -- defined after rxWindow helper
+
 // -----------------------------------------------------------------------------
 // Relay control
 // -----------------------------------------------------------------------------
@@ -80,6 +85,89 @@ void setRelay(uint8_t state) {
 #ifndef PZEM_FAKE
   digitalWrite(RELAY_PIN, g_relayState ? HIGH : LOW);
 #endif
+}
+
+// -----------------------------------------------------------------------------
+// Crash-resume state (RTC noinit RAM)
+// EMI from inductive load switching can hard-crash the MCU (panic/WDT/brownout).
+// RTC_NOINIT_ATTR memory survives those resets, so the previous registration and
+// relay state can be resumed on the first beacon (~3 s) instead of a full
+// listen + contention cycle.  The gateway holds the slot for NODE_TIMEOUT_SFS
+// (~24 s), so the slot is still ours when we come back; if the gateway did
+// evict or reboot, the existing epoch/slotMask checks force a clean re-join.
+//
+// Validity: magic + XOR checksum (rejects power-on garbage) + UID match +
+// crash-type reset reason.  A manual reboot (button/SW reset) does not resume.
+// -----------------------------------------------------------------------------
+#define RTC_RESUME_MAGIC 0x7D1AB007u
+
+struct RtcResumeState {
+  uint32_t magic;
+  uint16_t uid;
+  uint8_t  slotId;     // 0 = was not registered; restore rejected
+  uint8_t  joinEpoch;
+  uint8_t  relayState;
+  uint8_t  relayMode;
+  uint8_t  schedState;
+  uint8_t  schedSH;
+  uint8_t  schedSM;
+  uint8_t  schedEH;
+  uint8_t  schedEM;
+  uint8_t  csum;       // XOR of all preceding bytes, seeded 0x5A
+};
+
+static RTC_NOINIT_ATTR RtcResumeState s_rtcResume;
+
+static uint8_t rtcResumeCsum(const RtcResumeState& st) {
+  const uint8_t* p = (const uint8_t*)&st;
+  uint8_t c = 0x5A;
+  for (size_t i = 0; i < offsetof(RtcResumeState, csum); i++) c ^= p[i];
+  return c;
+}
+
+/** Snapshot current registration + relay state into RTC RAM (~20 byte write). */
+static void rtcResumeSave() {
+  s_rtcResume.magic      = RTC_RESUME_MAGIC;
+  s_rtcResume.uid        = g_nodeUID;
+  s_rtcResume.slotId     = g_nodeRegistered ? g_nodeSlotId : 0;
+  s_rtcResume.joinEpoch  = s_joinEpoch;
+  s_rtcResume.relayState = g_relayState;
+  s_rtcResume.relayMode  = g_relayMode;
+  s_rtcResume.schedState = g_schedState;
+  s_rtcResume.schedSH    = g_schedSH;
+  s_rtcResume.schedSM    = g_schedSM;
+  s_rtcResume.schedEH    = g_schedEH;
+  s_rtcResume.schedEM    = g_schedEM;
+  s_rtcResume.csum       = rtcResumeCsum(s_rtcResume);
+}
+
+/** Restore registration + relay state after a crash-type reset, if valid. */
+static void rtcResumeTryRestore() {
+  esp_reset_reason_t rr = esp_reset_reason();
+  bool crashReset = (rr == ESP_RST_PANIC)    || (rr == ESP_RST_INT_WDT) ||
+                    (rr == ESP_RST_TASK_WDT) || (rr == ESP_RST_WDT)     ||
+                    (rr == ESP_RST_BROWNOUT);
+  if (!crashReset ||
+      s_rtcResume.magic != RTC_RESUME_MAGIC ||
+      rtcResumeCsum(s_rtcResume) != s_rtcResume.csum ||
+      s_rtcResume.uid != g_nodeUID ||
+      s_rtcResume.slotId < 1 || s_rtcResume.slotId > MAX_NODES) {
+    s_rtcResume.magic = 0;  // never resume twice from the same snapshot origin
+    return;
+  }
+
+  g_nodeSlotId     = s_rtcResume.slotId;
+  g_nodeRegistered = true;
+  s_joinEpoch      = s_rtcResume.joinEpoch;
+  g_relayMode      = s_rtcResume.relayMode;
+  g_schedState     = s_rtcResume.schedState;
+  g_schedSH        = s_rtcResume.schedSH;
+  g_schedSM        = s_rtcResume.schedSM;
+  g_schedEH        = s_rtcResume.schedEH;
+  g_schedEM        = s_rtcResume.schedEM;
+  setRelay(s_rtcResume.relayState);
+  logAsync("[NODE-TDMA] Crash-resume: slot=%d epoch=%d relay=%d mode=%d\n",
+           g_nodeSlotId, s_joinEpoch, g_relayState, g_relayMode);
 }
 
 // -----------------------------------------------------------------------------
@@ -191,8 +279,8 @@ static volatile LedTdmaMode_t s_tdmaLedMode = LED_MODE_LISTEN;
 static TaskHandle_t           s_ledTaskHandle = nullptr;
 
 static void setLed(bool red, bool green) {
-  digitalWrite(LED_RED_PIN,   red   ? LOW : HIGH);
-  digitalWrite(LED_GREEN_PIN, green ? LOW : HIGH);
+  digitalWrite(LED_RED_PIN,   red   ? HIGH : LOW);
+  digitalWrite(LED_GREEN_PIN, green ? HIGH : LOW);
 }
 
 static void ledTask(void* /*params*/) {
@@ -317,6 +405,7 @@ static void handleDownlink(const uint8_t* buf, int16_t len) {
     return; // unknown -- do not set dlAck
   }
   s_dlAck = true;
+  rtcResumeSave();  // capture relay/schedule changes for crash-resume
 }
 
 // -----------------------------------------------------------------------------
@@ -376,6 +465,9 @@ static void transmitTelemetry(uint16_t sfCount) {
   pkt.beaconRSSI = (uint8_t)(int8_t)g_beaconRSSI;
   pkt.fwVersion  = FW_VERSION;
 
+  if (!loraIsLoRaMode(LORA_NSS_PIN)) {
+    radioReinit();
+  }
   uint8_t txBuf[sizeof(TelemetryPacket)];
   memcpy(txBuf, &pkt, sizeof(pkt));
   pktEncrypt(txBuf, sizeof(txBuf), sfCount, g_nodeSlotId, PKT_DIR_UL);
@@ -385,6 +477,46 @@ static void transmitTelemetry(uint16_t sfCount) {
                  g_pzem.voltage, g_pzem.current, g_pzem.power, g_seqCounter);
   } else {
     logAsync("[NODE-TX] Error %d\n", st);
+  }
+}
+
+// -----------------------------------------------------------------------------
+// Full radio re-initialisation after register corruption.
+// radio.begin() pulses RST and rewrites all config registers; standby() alone
+// only sets the OpMode bits and cannot recover corrupted modulation registers.
+//
+// Rate-limited to one call per REINIT_COOLDOWN_MS to prevent back-to-back
+// reinit loops during sustained EMI.  Always calls vTaskDelay(1) so the idle
+// task gets CPU time regardless of how the caller loops -- ArduinoHal::yield()
+// maps to taskYIELD(), which only yields to equal/higher priority tasks and
+// never schedules the idle task (priority 0) from a priority-2 TDMA context.
+// -----------------------------------------------------------------------------
+#define REINIT_COOLDOWN_MS 500
+static uint32_t s_lastReinitMs = 0;
+
+static void radioReinit() {
+  uint32_t now = millis();
+  if ((now - s_lastReinitMs) < REINIT_COOLDOWN_MS) {
+    vTaskDelay(pdMS_TO_TICKS(1));
+    return;
+  }
+  s_lastReinitMs = now;
+  logAsync("[NODE-TDMA] Radio reinit (register corruption)\n");
+  int16_t st = radio.begin(
+    LORA_CHANNELS[0],
+    LORA_BANDWIDTH,
+    LORA_SF,
+    LORA_CR,
+    LORA_SYNC_WORD,
+    LORA_TX_POWER,
+    LORA_PREAMBLE_LEN
+  );
+  radio.setCRC(true);
+  vTaskDelay(pdMS_TO_TICKS(1));
+  if (st != RADIOLIB_ERR_NONE) {
+    logAsync("[NODE-TDMA] Radio reinit failed %d\n", st);
+  } else {
+    logAsync("[NODE-TDMA] Radio reinit OK\n");
   }
 }
 
@@ -423,6 +555,11 @@ typedef enum { ST_LISTEN, ST_CONTENDING, ST_REGISTERED } NodeState_t;
 static void nodeTdmaTask(void* /*params*/) {
   logAsync("[NODE-TDMA] Task started on Core 1\n");
 
+  // Resume previous registration + relay state after a crash-type reset.
+  // Starts in ST_LISTEN either way; if resumed, the first beacon's epoch and
+  // slotMask checks route straight to ST_REGISTERED (or re-contend if stale).
+  rtcResumeTryRestore();
+
   NodeState_t state            = ST_LISTEN;
   uint32_t    beaconReceiveTime = 0;
   uint16_t    sfCount           = 0;
@@ -455,6 +592,14 @@ static void nodeTdmaTask(void* /*params*/) {
         int32_t remaining = (int32_t)(listenDeadline - millis());
         if (remaining <= 0) break;
 
+        // Proactive LoRa mode check: EMI from CFL/inductive load switching can
+        // corrupt the SX1278's OpMode register, dropping it into FSK mode.  Reading
+        // the register directly via loraIsLoRaMode() catches this before RadioLib
+        // sees it, avoiding a wasted startReceive() -> -25 -> reinit round-trip.
+        if (!loraIsLoRaMode(LORA_NSS_PIN)) {
+          logAsync("[NODE-TDMA] FSK fallback detected, reinitialising\n");
+          radioReinit();
+        }
         // standby() before startReceive() -- the radio may be left in RXCONTINUOUS
         // mode by a previous timeout (JoinAck window, stale packet loop) or by the
         // initial startReceive() at startup.  startReceive() on SX1278 returns
@@ -463,7 +608,13 @@ static void nodeTdmaTask(void* /*params*/) {
         radio.implicitHeader(sizeof(BeaconPacket));
         int16_t rxSt = radio.startReceive();
         if (rxSt != RADIOLIB_ERR_NONE) {
-          logAsync("[NODE-TDMA] startReceive failed %d\n", rxSt);
+          logAsync("[NODE-TDMA] startReceive failed %d, reinitialising\n", rxSt);
+          radioReinit();
+          radio.implicitHeader(sizeof(BeaconPacket));
+          rxSt = radio.startReceive();
+          if (rxSt != RADIOLIB_ERR_NONE) {
+            logAsync("[NODE-TDMA] startReceive post-reinit failed %d\n", rxSt);
+          }
         }
 
         int16_t len = rxWindow(buf, sizeof(buf), (uint32_t)remaining);
@@ -520,6 +671,10 @@ static void nodeTdmaTask(void* /*params*/) {
           s_tdmaLedMode = LED_MODE_CONTENDING;
         }
 
+        // Snapshot once per beacon: captures schedule-driven relay flips and
+        // eviction (slotId saved as 0, so a stale slot is never resumed).
+        rtcResumeSave();
+
       } else if (state != ST_LISTEN) {
         // Missed beacon - go back to basic listen mode
         logAsync("[NODE-TDMA] Beacon timeout - re-listening\n");
@@ -564,6 +719,7 @@ static void nodeTdmaTask(void* /*params*/) {
       }
 
       // Listen for ACK during contention DL window
+      radio.standby();
       radio.implicitHeader(sizeof(JoinAckPacket));
       radio.startReceive();
       uint8_t ackBuf[8];
@@ -581,6 +737,7 @@ static void nodeTdmaTask(void* /*params*/) {
           g_nodeSlotId     = ack.slotId;
           g_nodeRegistered = true;
           s_joinEpoch      = s_lastBeaconEpoch;
+          rtcResumeSave();
           logAsync("[NODE-JOIN] Registered! slotId=%d epoch=%d\n", g_nodeSlotId, s_joinEpoch);
           // Fall through to REGISTERED processing on next iteration
           state = ST_LISTEN;  // re-sync with next beacon before first TX
@@ -612,6 +769,7 @@ static void nodeTdmaTask(void* /*params*/) {
       waitUntilMs(dlStart);
       radio.setFrequency(LORA_CHANNELS[ch]);
       delayMicroseconds(PHASE_GUARD_US);
+      radio.standby();
       radio.implicitHeader(MAX_DL_PAYLOAD_LEN);
       radio.startReceive();
 
