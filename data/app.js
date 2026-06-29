@@ -6,6 +6,7 @@ let pendingCmd={};
 let relayOffAt={};
 let costRate=parseFloat(localStorage.getItem('pt-costRate'))||12.00;
 let authToken=localStorage.getItem('pt-token')||null;
+let pzemHack=false;
 const energyAnchor={}; // nodeId -> {wh, ts}
 const CONVERGE_MS=5*60*1000;
 function _eaKey(id){return'pt-ea-'+id;}
@@ -279,6 +280,13 @@ function promptReboot(a){
   openConfirm('Reboot Gateway','Reboot the gateway firmware now?',
     execReboot,'Reboot',true,a);
 }
+function promptTogglePzemHack(a) {
+  let titleMessage = pzemHack ? 'Turn PZEM hack off?' : 'Turn PZEM hack on?';
+  let titleHint = pzemHack ?
+    'This setting will de-assert relay state to current reading - best if PZEM is stable in this environment' :
+    'This setting will assert relay state to current reading - if relay is off, the current read is skipped'
+  openConfirm(titleMessage, titleHint, function() { pzemHack = !pzemHack; }, 'Toggle', false, a);
+}
 function promptLogout(a){
   openConfirm('Log Out','Log out of the dashboard?',
     doLogout,'Log Out',false,a);
@@ -398,7 +406,11 @@ function onMsg(m){
     if(n.relayState===1){delete relayOffAt[n.id];}
     else if(n.relayState===0&&prevRs!==0){relayOffAt[n.id]=Date.now();}
     const o={id:n.id,label:n.label,online:n.online,rssi:n.rssi,voltage:n.voltage,current:n.current,power:n.power,energy:n.energy,frequency:n.frequency,powerFactor:n.powerFactor,relayState:n.relayState,relayMode:n.relayMode,schedState:n.schedState,alarmState:n.alarmState,age:n.age,pending:n.pending,hasSched:n.hasSched,schedStart:n.schedStart,schedEnd:n.schedEnd,classifier:n.classifier};
-    recordEnergyAnchor(n.id,n.energy||0);
+    
+		// Faulty PZEM hack - assert zero current on inactive relay, disables faulty relay diagnostics :/
+		if (pzemHack && n.relayState===0) { o.current = 0; }
+		
+		recordEnergyAnchor(n.id,n.energy||0);
     const i=NC.findIndex(x=>x.id===n.id);if(i>=0)Object.assign(NC[i],o);else NC.push(o);
     const pg=$('pg-overview');
     if(pg&&pg.classList.contains('active'))renderGrid(NC);
